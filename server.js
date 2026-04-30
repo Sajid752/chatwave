@@ -1,5 +1,6 @@
 // ==================== server.js ====================
-// Real user matching (works!) + bot fallback
+// Final version – works on Express v5 (Render)
+// Real user matching + bot fallback + Razorpay payments
 
 const express = require('express');
 const cors = require('cors');
@@ -16,15 +17,15 @@ const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KE
 app.use(cors());
 app.use(express.json());
 
-// ------------------- STORES -------------------
+// ------------------- IN‑MEMORY STORES -------------------
 const activeSessions = new Map();          // sessionId -> lastSeen
 const userPremiums = new Map();            // sessionId -> expiry timestamp
 const waitingQueue = [];                   // sessionIds waiting for a real partner
 const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot }
 const chatMessages = new Map();            // roomId -> array of messages
-const userFilters = new Map();             // sessionId -> filters
+const userFilters = new Map();             // sessionId -> { myGender, region, prefer }
 
-// Bot fallback pool
+// Bot fallback pool (used only when no real users waiting)
 const strangersDB = [
   { id: 1, name: 'Mei', gender: 'female', region: 'asia' },
   { id: 2, name: 'Rahul', gender: 'male', region: 'asia' },
@@ -59,7 +60,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// Get bot partner
+// Get a bot partner (fallback)
 function getBotPartner(myGender, region, prefer, hasPremium) {
   let candidates = strangersDB.filter(s => {
     if (region !== 'global' && s.region !== region) return false;
@@ -79,7 +80,6 @@ function getBotPartner(myGender, region, prefer, hasPremium) {
 }
 
 // ------------------- API ROUTES -------------------
-
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -87,6 +87,7 @@ app.post('/api/create-order', async (req, res) => {
     const order = await razorpay.orders.create(options);
     res.json({ success: true, orderId: order.id, amount: order.amount, currency: order.currency, key: RAZORPAY_KEY_ID });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ success: false, message: 'Order creation failed' });
   }
 });
@@ -121,38 +122,29 @@ app.post('/api/find-match', (req, res) => {
   const { myGender, region, prefer, sessionId } = req.body;
   const hasPremium = isPremiumActive(sessionId);
 
-  // Store user filters
   userFilters.set(sessionId, { myGender, region, prefer });
 
   // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
-  if (existingChat) {
+  if (existingChat && !existingChat.isBot && existingChat.partnerSessionId) {
     const partnerId = existingChat.partnerSessionId;
-    if (existingChat.isBot) {
-      // Bot chat – just return the bot info (already handled)
-    } else if (partnerId) {
-      const partnerFilters = userFilters.get(partnerId) || {};
-      return res.json({
-        success: true,
-        partner: { name: 'Real user', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerId, isBot: false }
-      });
-    }
+    const partnerFilters = userFilters.get(partnerId) || {};
+    return res.json({
+      success: true,
+      partner: { name: 'Real user', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerId, isBot: false }
+    });
   }
 
   // Remove user from waiting queue if already there (cleanup)
   const existingIndex = waitingQueue.indexOf(sessionId);
   if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
 
-  // Add the user to the waiting queue
   waitingQueue.push(sessionId);
-
-  // Attempt to match two real users
   const matched = tryMatchRealUsers();
 
   if (matched) {
-    // After tryMatchRealUsers, both users are in activeChats
     const chat = activeChats.get(sessionId);
-    if (chat && !chat.isBot) {
+    if (chat && !chat.isBot && chat.partnerSessionId) {
       const partnerId = chat.partnerSessionId;
       const partnerFilters = userFilters.get(partnerId) || {};
       return res.json({
@@ -196,7 +188,6 @@ app.post('/api/end-chat', (req, res) => {
   const { sessionId } = req.body;
   const chat = activeChats.get(sessionId);
   if (chat) {
-    // If real partner, also clear partner's chat to avoid orphan
     if (!chat.isBot && chat.partnerSessionId) {
       const partnerChat = activeChats.get(chat.partnerSessionId);
       if (partnerChat) activeChats.delete(chat.partnerSessionId);
@@ -205,15 +196,13 @@ app.post('/api/end-chat', (req, res) => {
     const roomId = chat.roomId;
     chatMessages.delete(roomId);
   }
-  // Remove from waiting queue if present
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (same as before, but with updated messaging) -------------------
-app.get('/*splat', (req, res) => {
-  res.send(`<!DOCTYPE html>
+// ------------------- FRONTEND (HTML embedded) -------------------
+const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -366,11 +355,9 @@ app.get('/*splat', (req, res) => {
         const partnerType = partner.isBot ? '(bot)' : '(real user)';
         addSystemMsg('✨ Connected with ' + partner.name + ' ' + partnerType + ' from ' + partner.region);
         updateUI();
-        // Start polling for messages
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
         msgInterval = setInterval(pollMessages, 1500);
-        // If it's a bot, still simulate typing but messages come from polling? Actually bot replies are simulated locally for now
         if(partner.isBot) {
             setTimeout(()=>{ if(chatActive && activePartner && activePartner.isBot) addBubble("Hey! Nice to meet you :)", 'in'); },700);
         }
@@ -407,7 +394,6 @@ app.get('/*splat', (req, res) => {
         addBubble(text, 'out');
         input.value = '';
         await apiCall('/api/send-message', 'POST', { sessionId, text });
-        // If bot, simulate reply after a delay (bot doesn't actually send via API)
         if(activePartner.isBot) {
             document.getElementById('typingIndicator').innerText = activePartner.name + ' is typing...';
             setTimeout(()=>{
@@ -469,11 +455,15 @@ app.get('/*splat', (req, res) => {
     updateUI();
 </script>
 </body>
-</html>
-  `);
-});
+</html>`;
 
+// Serve the frontend – explicit route for root, and catch-all for other paths
+app.get('/', (req, res) => res.send(htmlTemplate));
+app.get('/*splat', (req, res) => res.send(htmlTemplate));
+
+// ------------------- START SERVER -------------------
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`👥 Real user matching enabled — users will be paired together!`);
+  console.log(`👥 Real user matching enabled — friends will be paired together!`);
+  console.log(`🔑 Razorpay: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys' : 'active'}`);
 });
