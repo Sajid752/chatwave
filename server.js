@@ -1,6 +1,6 @@
 // ==================== server.js ====================
-// Final version – works on Express v5 (Render)
-// Real user matching + bot fallback + Razorpay payments
+// REAL USER MATCHING ONLY – NO BOTS
+// Works on Express v5 (Render) with explicit root route
 
 const express = require('express');
 const cors = require('cors');
@@ -21,21 +21,9 @@ app.use(express.json());
 const activeSessions = new Map();          // sessionId -> lastSeen
 const userPremiums = new Map();            // sessionId -> expiry timestamp
 const waitingQueue = [];                   // sessionIds waiting for a real partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot }
+const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot (always false now) }
 const chatMessages = new Map();            // roomId -> array of messages
 const userFilters = new Map();             // sessionId -> { myGender, region, prefer }
-
-// Bot fallback pool (used only when no real users waiting)
-const strangersDB = [
-  { id: 1, name: 'Mei', gender: 'female', region: 'asia' },
-  { id: 2, name: 'Rahul', gender: 'male', region: 'asia' },
-  { id: 3, name: 'Elena', gender: 'female', region: 'europe' },
-  { id: 4, name: 'Liam', gender: 'male', region: 'europe' },
-  { id: 5, name: 'Sofia', gender: 'female', region: 'americas' },
-  { id: 6, name: 'James', gender: 'male', region: 'americas' },
-  { id: 7, name: 'Priya', gender: 'female', region: 'asia' },
-  { id: 8, name: 'Kenji', gender: 'male', region: 'asia' },
-];
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -58,25 +46,6 @@ function tryMatchRealUsers() {
   activeChats.set(userB, { partnerSessionId: userA, roomId, isBot: false });
   chatMessages.set(roomId, []);
   return true;
-}
-
-// Get a bot partner (fallback)
-function getBotPartner(myGender, region, prefer, hasPremium) {
-  let candidates = strangersDB.filter(s => {
-    if (region !== 'global' && s.region !== region) return false;
-    if (prefer !== 'any' && s.gender !== prefer) return false;
-    return true;
-  });
-  if (candidates.length === 0) candidates = strangersDB;
-  const isMaleSeekingFemale = myGender === 'male' && (prefer === 'female' || prefer === 'any');
-  if (isMaleSeekingFemale && !hasPremium) {
-    if (Math.random() > 0.15) {
-      candidates = candidates.filter(c => c.gender !== 'female');
-      if (candidates.length === 0) candidates = strangersDB;
-    }
-  }
-  const partner = candidates[Math.floor(Math.random() * candidates.length)];
-  return { name: partner.name, gender: partner.gender, region: partner.region, id: partner.id, isBot: true };
 }
 
 // ------------------- API ROUTES -------------------
@@ -126,7 +95,7 @@ app.post('/api/find-match', (req, res) => {
 
   // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
-  if (existingChat && !existingChat.isBot && existingChat.partnerSessionId) {
+  if (existingChat && existingChat.partnerSessionId) {
     const partnerId = existingChat.partnerSessionId;
     const partnerFilters = userFilters.get(partnerId) || {};
     return res.json({
@@ -144,7 +113,7 @@ app.post('/api/find-match', (req, res) => {
 
   if (matched) {
     const chat = activeChats.get(sessionId);
-    if (chat && !chat.isBot && chat.partnerSessionId) {
+    if (chat && chat.partnerSessionId) {
       const partnerId = chat.partnerSessionId;
       const partnerFilters = userFilters.get(partnerId) || {};
       return res.json({
@@ -154,12 +123,8 @@ app.post('/api/find-match', (req, res) => {
     }
   }
 
-  // No real partner available – fallback to bot
-  const botPartner = getBotPartner(myGender, region, prefer, hasPremium);
-  const roomId = createRoomId();
-  activeChats.set(sessionId, { partnerSessionId: null, roomId, isBot: true });
-  chatMessages.set(roomId, []);
-  res.json({ success: true, partner: { name: botPartner.name, gender: botPartner.gender, region: botPartner.region, id: botPartner.id, isBot: true } });
+  // No real partner available – tell user to try again
+  return res.json({ success: false, message: "No real users available. Please try again later." });
 });
 
 app.post('/api/send-message', (req, res) => {
@@ -188,7 +153,7 @@ app.post('/api/end-chat', (req, res) => {
   const { sessionId } = req.body;
   const chat = activeChats.get(sessionId);
   if (chat) {
-    if (!chat.isBot && chat.partnerSessionId) {
+    if (chat.partnerSessionId) {
       const partnerChat = activeChats.get(chat.partnerSessionId);
       if (partnerChat) activeChats.delete(chat.partnerSessionId);
     }
@@ -295,7 +260,7 @@ const htmlTemplate = `<!DOCTYPE html>
                 <div class="filter-group"><label><i class="fas fa-user"></i> My gender</label><select id="chatMyGender"><option value="male">👨 Male</option><option value="female">👩 Female</option><option value="other">🌈 Other</option></select></div>
                 <div class="filter-group"><label><i class="fas fa-globe"></i> Region</label><select id="chatRegion"><option value="global">🌍 Global</option><option value="asia">🌏 Asia</option><option value="europe">🇪🇺 Europe</option><option value="americas">🌎 Americas</option></select></div>
                 <div class="filter-group"><label><i class="fas fa-heart"></i> Prefer to chat with</label><select id="chatPrefer"><option value="any">✨ Anyone</option><option value="female">👩 Female</option><option value="male">👨 Male</option><option value="other">🌈 Other</option></select></div>
-                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users now!</strong><br>When friends both click "Find Partner", they'll be matched together. Bots only as fallback.</div>
+                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>No bots – when two people both click "Find Partner", they'll chat together.</div>
                 <button id="payBoostBtn" class="pay-boost"><i class="fas fa-qrcode"></i> Pay ₹12 (Real UPI)</button>
                 <button id="findChatBtn" class="btn-primary"><i class="fas fa-random"></i> Find Partner</button>
                 <button id="endChatPageBtn" class="btn-danger" style="margin-top:8px;"><i class="fas fa-stop"></i> End Chat</button>
@@ -303,7 +268,7 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
             <div class="chat-panel">
                 <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;"><span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span><span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span></div>
-                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching active! Invite friends – when both click "Find Partner", you'll chat together.</div></div>
+                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching only! Invite a friend – when you both click "Find Partner", you'll chat together.</div></div>
                 <div class="typing" id="typingIndicator"></div>
                 <div class="input-row"><input type="text" id="chatMsgInput" placeholder="Type a message..."><button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button></div>
             </div>
@@ -344,7 +309,8 @@ const htmlTemplate = `<!DOCTYPE html>
         });
         showLoading(false);
         if(res.success && res.partner) startChat(res.partner);
-        else addSystemMsg("No partners available. Try again.");
+        else if(res.message) addSystemMsg(res.message);
+        else addSystemMsg("Could not find a partner. Try again.");
     }
 
     function startChat(partner) {
@@ -352,15 +318,11 @@ const htmlTemplate = `<!DOCTYPE html>
         activePartner = partner;
         chatActive = true;
         clearChatMsgs();
-        const partnerType = partner.isBot ? '(bot)' : '(real user)';
-        addSystemMsg('✨ Connected with ' + partner.name + ' ' + partnerType + ' from ' + partner.region);
+        addSystemMsg('✨ Connected with ' + partner.name + ' (real user) from ' + partner.region);
         updateUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
         msgInterval = setInterval(pollMessages, 1500);
-        if(partner.isBot) {
-            setTimeout(()=>{ if(chatActive && activePartner && activePartner.isBot) addBubble("Hey! Nice to meet you :)", 'in'); },700);
-        }
     }
 
     async function pollMessages() {
@@ -394,16 +356,6 @@ const htmlTemplate = `<!DOCTYPE html>
         addBubble(text, 'out');
         input.value = '';
         await apiCall('/api/send-message', 'POST', { sessionId, text });
-        if(activePartner.isBot) {
-            document.getElementById('typingIndicator').innerText = activePartner.name + ' is typing...';
-            setTimeout(()=>{
-                document.getElementById('typingIndicator').innerText = '';
-                if(chatActive && activePartner && activePartner.isBot) {
-                    const replies = ["Interesting!", "Cool", "Tell me more", "I see!", "Haha"];
-                    addBubble(replies[Math.floor(Math.random()*replies.length)], 'in');
-                }
-            }, 1000);
-        }
     }
 
     function addSystemMsg(t) { const area=document.getElementById('chatMsgsArea'); const div=document.createElement('div'); div.className='sys-msg'; div.innerHTML='<i class="fas fa-info-circle"></i> '+t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
@@ -412,7 +364,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function updateUI() {
         const pSpan=document.getElementById('partnerNameLabel'); const cSpan=document.getElementById('connBadge'); const sendBtn=document.getElementById('sendChatMsgBtn'); const inp=document.getElementById('chatMsgInput'); const payDiv=document.getElementById('paymentStatusChat');
-        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> '+activePartner.name + (activePartner.isBot ? ' (bot)' : ' (real)'); cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
+        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> '+activePartner.name+' (real)'; cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
         const myGender=document.getElementById('chatMyGender').value;
         if(myGender==='male' && hasPremium && premiumExpiry && Date.now()<premiumExpiry){ const left=Math.floor((premiumExpiry-Date.now())/60000); payDiv.innerHTML='<i class="fas fa-crown"></i> PREMIUM ('+left+'min left) · 100% female match'; }
         else if(myGender==='male') payDiv.innerHTML='<i class="fas fa-clock"></i> No premium · Female chance: 15% <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
@@ -444,7 +396,7 @@ const htmlTemplate = `<!DOCTYPE html>
     let verified=false;
     verifyBtn.onclick=()=>{ verified=true; verifyBtn.innerHTML='<i class="fas fa-check-circle"></i> Verified ✓'; verifyBtn.classList.add('verified'); document.getElementById('verifyStatus').innerHTML='<span style="color:#10b981;">✓ Verified</span>'; goBtn.disabled=!(acceptCheck.checked && verified); };
     acceptCheck.onchange=()=>{ goBtn.disabled=!(acceptCheck.checked && verified); };
-    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching active! Invite friends – when both click 'Find Partner', you'll chat together."); };
+    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching only! Invite a friend – when you both click 'Find Partner', you'll chat together."); };
     document.getElementById('findChatBtn').onclick=findMatch;
     document.getElementById('endChatPageBtn').onclick=endChat;
     document.getElementById('sendChatMsgBtn').onclick=sendMessage;
@@ -457,13 +409,13 @@ const htmlTemplate = `<!DOCTYPE html>
 </body>
 </html>`;
 
-// Serve the frontend – explicit route for root, and catch-all for other paths
+// Serve the frontend – explicit root route and catch-all for client-side routing
 app.get('/', (req, res) => res.send(htmlTemplate));
 app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 // ------------------- START SERVER -------------------
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`👥 Real user matching enabled — friends will be paired together!`);
+  console.log(`👥 Real user matching only (no bots) — friends will be paired together!`);
   console.log(`🔑 Razorpay: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys' : 'active'}`);
 });
