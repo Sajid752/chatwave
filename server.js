@@ -1,114 +1,82 @@
 // ==================== server.js ====================
-// Full-stack chat application with Razorpay payments
-// Deploy as a single file – no separate frontend files needed
+// Fully rewritten: supports real user-to-user chat + bot fallback
+// No WebSockets – uses simple HTTP polling
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==================== CONFIGURATION ====================
-// Replace with your actual Razorpay keys from dashboard.razorpay.com
-// For production, use environment variables (Render, Railway, etc.)
-const RAZORPAY_KEY_ID = 'rzp_test_SjkRHBxR35ls58';   // <- paste your Key ID here (keep the quotes)
-const RAZORPAY_KEY_SECRET = 'nVBr3LEjVAtLM3MfdJrKx3KY';   // <- paste your Key Secret here (keep the quotes)
-
-const razorpay = new Razorpay({
-  key_id: RAZORPAY_KEY_ID,
-  key_secret: RAZORPAY_KEY_SECRET,
-});
+// Razorpay config
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'YOUR_KEY_ID_HERE';
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'YOUR_KEY_SECRET_HERE';
+const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
 
 app.use(cors());
 app.use(express.json());
 
-// In-memory stores (reset on server restart – use database for production)
-const activeSessions = new Map();
-const userPremiums = new Map(); // sessionId -> expiry timestamp
+// ------------------- IN‑MEMORY STORES -------------------
+const activeSessions = new Map();     // sessionId -> lastSeen
+const userPremiums = new Map();       // sessionId -> expiry timestamp
+const waitingUsers = [];              // list of sessionIds waiting for a partner
+const activeChats = new Map();        // sessionId -> { partnerSessionId, roomId }
+const chatMessages = new Map();       // roomId -> array of { text, from, timestamp }
+const userFilters = new Map();        // sessionId -> { myGender, region, prefer }
 
-// ==================== API ROUTES ====================
+// Stanger pool for bot fallback
+const strangersDB = [
+  { id: 1, name: 'Mei', gender: 'female', region: 'asia' },
+  { id: 2, name: 'Rahul', gender: 'male', region: 'asia' },
+  { id: 3, name: 'Elena', gender: 'female', region: 'europe' },
+  { id: 4, name: 'Liam', gender: 'male', region: 'europe' },
+  { id: 5, name: 'Sofia', gender: 'female', region: 'americas' },
+  { id: 6, name: 'James', gender: 'male', region: 'americas' },
+  { id: 7, name: 'Priya', gender: 'female', region: 'asia' },
+  { id: 8, name: 'Kenji', gender: 'male', region: 'asia' },
+  { id: 9, name: 'Zara', gender: 'female', region: 'europe' },
+  { id: 10, name: 'Oliver', gender: 'male', region: 'europe' },
+];
 
-// 1. Create Razorpay order
-app.post('/api/create-order', async (req, res) => {
-  try {
-    const { amount } = req.body;
-    const options = {
-      amount: amount * 100, // convert rupees to paise
-      currency: 'INR',
-      receipt: `receipt_${Date.now()}`,
-      payment_capture: 1,
-    };
-    const order = await razorpay.orders.create(options);
-    res.json({
-      success: true,
-      orderId: order.id,
-      amount: order.amount,
-      currency: order.currency,
-      key: RAZORPAY_KEY_ID,
-    });
-  } catch (error) {
-    console.error('Order creation error:', error);
-    res.status(500).json({ success: false, message: 'Failed to create order' });
-  }
-});
-
-// 2. Verify payment after success
-app.post('/api/verify-payment', (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, sessionId } = req.body;
-  const body = razorpay_order_id + '|' + razorpay_payment_id;
-  const expectedSignature = crypto
-    .createHmac('sha256', RAZORPAY_KEY_SECRET)
-    .update(body.toString())
-    .digest('hex');
-
-  if (expectedSignature === razorpay_signature) {
-    // Grant premium for 30 minutes
-    userPremiums.set(sessionId, Date.now() + 30 * 60 * 1000);
-    res.json({ success: true, message: 'Payment verified, premium activated' });
-  } else {
-    res.status(400).json({ success: false, message: 'Invalid signature' });
-  }
-});
-
-// 3. Check if user has premium
-app.post('/api/check-premium', (req, res) => {
-  const { sessionId } = req.body;
+// ------------------- HELPER FUNCTIONS -------------------
+function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
-  const hasPremium = expiry && expiry > Date.now();
-  res.json({ success: true, hasPremium, expiry });
-});
+  return expiry && expiry > Date.now();
+}
 
-// 4. Get active users count (simulated)
-app.get('/api/active-users', (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  if (sessionId) activeSessions.set(sessionId, Date.now());
-  // Clean old sessions (older than 1 minute)
-  for (let [id, time] of activeSessions.entries()) {
-    if (Date.now() - time > 60000) activeSessions.delete(id);
-  }
-  const baseCount = 50;
-  const randomVariation = Math.floor(Math.random() * 100);
-  res.json({ success: true, count: activeSessions.size + baseCount + randomVariation });
-});
+function removeFromWaiting(sessionId) {
+  const idx = waitingUsers.indexOf(sessionId);
+  if (idx !== -1) waitingUsers.splice(idx, 1);
+}
 
-// 5. Find a chat partner (with premium logic)
-app.post('/api/find-match', (req, res) => {
-  const { myGender, region, prefer, hasPremium } = req.body;
-  const strangersDB = [
-    { id: 1, name: 'Mei', gender: 'female', region: 'asia' },
-    { id: 2, name: 'Rahul', gender: 'male', region: 'asia' },
-    { id: 3, name: 'Elena', gender: 'female', region: 'europe' },
-    { id: 4, name: 'Liam', gender: 'male', region: 'europe' },
-    { id: 5, name: 'Sofia', gender: 'female', region: 'americas' },
-    { id: 6, name: 'James', gender: 'male', region: 'americas' },
-    { id: 7, name: 'Priya', gender: 'female', region: 'asia' },
-    { id: 8, name: 'Kenji', gender: 'male', region: 'asia' },
-    { id: 9, name: 'Zara', gender: 'female', region: 'europe' },
-    { id: 10, name: 'Oliver', gender: 'male', region: 'europe' },
-  ];
+function createRoomId() {
+  return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+}
+
+// Try to match two waiting users
+function tryMatchRealUsers() {
+  if (waitingUsers.length < 2) return false;
+  // For simplicity, match the first two in queue
+  const userA = waitingUsers.shift();
+  const userB = waitingUsers.shift();
+  if (!userA || !userB) return false;
+
+  const filtersA = userFilters.get(userA) || {};
+  const filtersB = userFilters.get(userB) || {};
+
+  // Check compatibility (optional: check gender/region preferences)
+  // For now, we match anyone – you can expand logic later
+  const roomId = createRoomId();
+  activeChats.set(userA, { partnerSessionId: userB, roomId, isBot: false });
+  activeChats.set(userB, { partnerSessionId: userA, roomId, isBot: false });
+  chatMessages.set(roomId, []);
+  return true;
+}
+
+// Get a bot partner (fallback)
+function getBotPartner(myGender, region, prefer, hasPremium) {
   let candidates = strangersDB.filter(s => {
     if (region !== 'global' && s.region !== region) return false;
     if (prefer !== 'any' && s.gender !== prefer) return false;
@@ -117,24 +85,151 @@ app.post('/api/find-match', (req, res) => {
   if (candidates.length === 0) candidates = strangersDB;
   const isMaleSeekingFemale = myGender === 'male' && (prefer === 'female' || prefer === 'any');
   if (isMaleSeekingFemale && !hasPremium) {
-    // 85% chance to avoid female if no premium
     if (Math.random() > 0.15) {
       candidates = candidates.filter(c => c.gender !== 'female');
       if (candidates.length === 0) candidates = strangersDB;
     }
   }
   const partner = candidates[Math.floor(Math.random() * candidates.length)];
-  res.json({ success: true, partner });
+  return { name: partner.name, gender: partner.gender, region: partner.region, id: partner.id, isBot: true };
+}
+
+// ------------------- API ROUTES -------------------
+
+// 1. Create Razorpay order (unchanged)
+app.post('/api/create-order', async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const options = { amount: amount * 100, currency: 'INR', receipt: `receipt_${Date.now()}`, payment_capture: 1 };
+    const order = await razorpay.orders.create(options);
+    res.json({ success: true, orderId: order.id, amount: order.amount, currency: order.currency, key: RAZORPAY_KEY_ID });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Order creation failed' });
+  }
 });
 
-// ==================== SERVE FRONTEND ====================
-app.get('/{*splat}', (req, res) => {
+// 2. Verify payment
+app.post('/api/verify-payment', (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, sessionId } = req.body;
+  const body = razorpay_order_id + '|' + razorpay_payment_id;
+  const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
+  if (expectedSignature === razorpay_signature) {
+    userPremiums.set(sessionId, Date.now() + 30 * 60 * 1000);
+    res.json({ success: true, message: 'Premium activated' });
+  } else {
+    res.status(400).json({ success: false, message: 'Invalid signature' });
+  }
+});
+
+// 3. Check premium status
+app.post('/api/check-premium', (req, res) => {
+  const { sessionId } = req.body;
+  const expiry = userPremiums.get(sessionId);
+  const hasPremium = expiry && expiry > Date.now();
+  res.json({ success: true, hasPremium, expiry });
+});
+
+// 4. Get active users (simulated)
+app.get('/api/active-users', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  if (sessionId) activeSessions.set(sessionId, Date.now());
+  for (let [id, time] of activeSessions.entries()) if (Date.now() - time > 60000) activeSessions.delete(id);
+  res.json({ success: true, count: activeSessions.size + Math.floor(Math.random() * 100) + 50 });
+});
+
+// 5. Find or create a match (REAL + BOT)
+app.post('/api/find-match', (req, res) => {
+  const { myGender, region, prefer, sessionId } = req.body;
+  const hasPremium = isPremiumActive(sessionId);
+
+  // Store filters for this user
+  userFilters.set(sessionId, { myGender, region, prefer });
+
+  // If user already in a chat, return that
+  const existingChat = activeChats.get(sessionId);
+  if (existingChat) {
+    const partnerSessionId = existingChat.partnerSessionId;
+    const partnerFilters = userFilters.get(partnerSessionId) || {};
+    return res.json({
+      success: true,
+      partner: { name: 'Chat partner', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerSessionId, isBot: false }
+    });
+  }
+
+  // Try to match with another real waiting user
+  waitingUsers.push(sessionId);
+  const matched = tryMatchRealUsers();
+
+  if (matched) {
+    // The current user may have been matched in tryMatchRealUsers
+    const chat = activeChats.get(sessionId);
+    if (chat) {
+      const partnerSessionId = chat.partnerSessionId;
+      const partnerFilters = userFilters.get(partnerSessionId) || {};
+      return res.json({
+        success: true,
+        partner: { name: 'Chat partner', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerSessionId, isBot: false }
+      });
+    }
+  }
+
+  // No real partner yet – fallback to bot
+  const botPartner = getBotPartner(myGender, region, prefer, hasPremium);
+  const roomId = createRoomId();
+  activeChats.set(sessionId, { partnerSessionId: null, roomId, isBot: true });
+  chatMessages.set(roomId, []);
+  res.json({ success: true, partner: { name: botPartner.name, gender: botPartner.gender, region: botPartner.region, id: botPartner.id, isBot: true } });
+});
+
+// 6. Send a message
+app.post('/api/send-message', (req, res) => {
+  const { sessionId, text } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
+
+  const roomId = chat.roomId;
+  const messages = chatMessages.get(roomId) || [];
+  messages.push({ from: sessionId, text, timestamp: Date.now() });
+  chatMessages.set(roomId, messages);
+  res.json({ success: true });
+});
+
+// 7. Get new messages (polling)
+app.post('/api/get-messages', (req, res) => {
+  const { sessionId, lastTimestamp } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.json({ success: true, messages: [] });
+
+  const roomId = chat.roomId;
+  const messages = chatMessages.get(roomId) || [];
+  const newMessages = messages.filter(m => m.timestamp > (lastTimestamp || 0));
+  // Don't send back messages from the same user (optional)
+  const filtered = newMessages.filter(m => m.from !== sessionId);
+  res.json({ success: true, messages: filtered });
+});
+
+// 8. End chat
+app.post('/api/end-chat', (req, res) => {
+  const { sessionId } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (chat) {
+    // Remove room if partner also ends? For simplicity, just delete this user's chat
+    activeChats.delete(sessionId);
+    // Optionally clean up room if both sides ended
+  }
+  removeFromWaiting(sessionId);
+  res.json({ success: true });
+});
+
+// ------------------- SERVE FRONTEND (unchanged but with new JS polling) -------------------
+app.get('*', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatWave · Real Payments</title>
+    <title>ChatWave · Real Friends Chat</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -201,10 +296,10 @@ app.get('/{*splat}', (req, res) => {
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Random chat · Gender filters · Secure payments</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real chat · Real friends · Real payments</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 real payment (UPI) unlocks 100% match chance. Without payment: 15% chance.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance without waiting.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
             <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
             <div class="captcha-box"><div class="captcha-label"><i class="fas fa-robot"></i><span>Human verification</span></div><button id="verifyRobotBtn" class="verify-btn"><i class="fas fa-check-circle"></i> I'm not a robot</button></div>
@@ -222,7 +317,7 @@ app.get('/{*splat}', (req, res) => {
                 <div class="filter-group"><label><i class="fas fa-user"></i> My gender</label><select id="chatMyGender"><option value="male">👨 Male</option><option value="female">👩 Female</option><option value="other">🌈 Other</option></select></div>
                 <div class="filter-group"><label><i class="fas fa-globe"></i> Region</label><select id="chatRegion"><option value="global">🌍 Global</option><option value="asia">🌏 Asia</option><option value="europe">🇪🇺 Europe</option><option value="americas">🌎 Americas</option></select></div>
                 <div class="filter-group"><label><i class="fas fa-heart"></i> Prefer to chat with</label><select id="chatPrefer"><option value="any">✨ Anyone</option><option value="female">👩 Female</option><option value="male">👨 Male</option><option value="other">🌈 Other</option></select></div>
-                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Payment Boost</strong><br>Male → Female: ₹12 real UPI = 100% match chance (30min). Real money, real premium.</div>
+                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users now!</strong><br>When friends are online, you'll be matched together automatically. Bots only as fallback.</div>
                 <button id="payBoostBtn" class="pay-boost"><i class="fas fa-qrcode"></i> Pay ₹12 (Real UPI)</button>
                 <button id="findChatBtn" class="btn-primary"><i class="fas fa-random"></i> Find Partner</button>
                 <button id="endChatPageBtn" class="btn-danger" style="margin-top:8px;"><i class="fas fa-stop"></i> End Chat</button>
@@ -230,7 +325,7 @@ app.get('/{*splat}', (req, res) => {
             </div>
             <div class="chat-panel">
                 <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;"><span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span><span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span></div>
-                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Welcome to ChatWave! Real payments accepted. Pay ₹12 for premium.</div></div>
+                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching is active! When two friends click "Find Partner", you'll be paired.</div></div>
                 <div class="typing" id="typingIndicator"></div>
                 <div class="input-row"><input type="text" id="chatMsgInput" placeholder="Type a message..."><button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button></div>
             </div>
@@ -244,6 +339,8 @@ app.get('/{*splat}', (req, res) => {
     localStorage.setItem('sessionId', sessionId);
     let activePartner = null, chatActive = false, hasPremium = false, premiumExpiry = null;
     let activePolling = null;
+    let lastMsgTimestamp = 0;
+    let msgInterval = null;
 
     function showToast(msg, type='info') { const c=document.getElementById('toastContainer'); const t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(()=>t.remove(),4000); }
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
@@ -257,6 +354,7 @@ app.get('/{*splat}', (req, res) => {
 
     async function checkPremium() { const res = await apiCall('/api/check-premium', 'POST', { sessionId }); hasPremium = res.hasPremium; premiumExpiry = res.expiry; updateUI(); }
     async function getActiveUsers() { const res = await apiCall('/api/active-users'); document.getElementById('activeUserCount').innerText = res.count; }
+
     async function findMatch() {
         if(chatActive) { addSystemMsg("End current chat first."); return; }
         showLoading(true);
@@ -264,7 +362,6 @@ app.get('/{*splat}', (req, res) => {
             myGender: document.getElementById('chatMyGender').value,
             region: document.getElementById('chatRegion').value,
             prefer: document.getElementById('chatPrefer').value,
-            hasPremium: hasPremium,
             sessionId
         });
         showLoading(false);
@@ -272,15 +369,71 @@ app.get('/{*splat}', (req, res) => {
         else addSystemMsg("No partners available. Try again.");
     }
 
-    function startChat(partner) { if(chatActive) endChat(); activePartner = partner; chatActive = true; clearChatMsgs(); addSystemMsg('✨ Connected with '+partner.name+' ('+partner.gender+') from '+partner.region); updateUI(); setTimeout(()=>{ if(chatActive) addBubble("Hey! Nice to meet you :)", 'in'); },700); }
-    function endChat() { chatActive=false; activePartner=null; clearChatMsgs(true); updateUI(); }
+    function startChat(partner) {
+        if(chatActive) endChat();
+        activePartner = partner;
+        chatActive = true;
+        clearChatMsgs();
+        addSystemMsg('✨ Connected with ' + partner.name + (partner.isBot ? ' (bot)' : ' (real user)') + ' from ' + partner.region);
+        updateUI();
+        // Start polling for messages every 1.5 seconds
+        lastMsgTimestamp = Date.now();
+        if(msgInterval) clearInterval(msgInterval);
+        msgInterval = setInterval(pollMessages, 1500);
+        setTimeout(()=>{ if(chatActive) addBubble("Hey! Nice to meet you :)", 'in'); },700);
+    }
+
+    async function pollMessages() {
+        if(!chatActive) return;
+        const res = await apiCall('/api/get-messages', 'POST', { sessionId, lastTimestamp: lastMsgTimestamp });
+        if(res.success && res.messages && res.messages.length) {
+            for(let msg of res.messages) {
+                addBubble(msg.text, 'in');
+                if(msg.timestamp > lastMsgTimestamp) lastMsgTimestamp = msg.timestamp;
+            }
+        }
+    }
+
+    async function endChat() {
+        if(chatActive) {
+            await apiCall('/api/end-chat', 'POST', { sessionId });
+            if(msgInterval) clearInterval(msgInterval);
+            msgInterval = null;
+            chatActive = false;
+            activePartner = null;
+            clearChatMsgs(true);
+            updateUI();
+        }
+    }
+
+    async function sendMessage() {
+        if(!chatActive || !activePartner) return;
+        const input = document.getElementById('chatMsgInput');
+        const text = input.value.trim();
+        if(!text) return;
+        addBubble(text, 'out');
+        input.value = '';
+        await apiCall('/api/send-message', 'POST', { sessionId, text });
+        // Simulate typing only for bots (optional)
+        if(activePartner.isBot) {
+            document.getElementById('typingIndicator').innerText = activePartner.name + ' is typing...';
+            setTimeout(()=>{
+                document.getElementById('typingIndicator').innerText = '';
+                if(chatActive && activePartner.isBot) {
+                    const replies = ["Interesting!", "Cool", "Tell me more", "I see!", "Haha"];
+                    addBubble(replies[Math.floor(Math.random()*replies.length)], 'in');
+                }
+            }, 1000);
+        }
+    }
+
     function addSystemMsg(t) { const area=document.getElementById('chatMsgsArea'); const div=document.createElement('div'); div.className='sys-msg'; div.innerHTML='<i class="fas fa-info-circle"></i> '+t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
     function addBubble(t, type) { const area=document.getElementById('chatMsgsArea'); const div=document.createElement('div'); div.className='msg '+(type==='out'?'msg-out':'msg-in'); div.innerText=t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
     function clearChatMsgs(keepSys=false){ const area=document.getElementById('chatMsgsArea'); area.innerHTML=''; if(keepSys) addSystemMsg("Chat ended. Click 'Find Partner' to start a new conversation."); }
-    function sendMessage(){ if(!chatActive) return; const inp=document.getElementById('chatMsgInput'); const txt=inp.value.trim(); if(!txt) return; addBubble(txt,'out'); inp.value=''; document.getElementById('typingIndicator').innerText=activePartner.name+' is typing...'; setTimeout(()=>{ document.getElementById('typingIndicator').innerText=''; if(chatActive) addBubble(["Interesting!","Cool","Tell me more","I see!"][Math.floor(Math.random()*4)],'in'); },1000);}
+
     function updateUI() {
         const pSpan=document.getElementById('partnerNameLabel'); const cSpan=document.getElementById('connBadge'); const sendBtn=document.getElementById('sendChatMsgBtn'); const inp=document.getElementById('chatMsgInput'); const payDiv=document.getElementById('paymentStatusChat');
-        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> '+activePartner.name+' ('+activePartner.gender+')'; cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
+        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> '+activePartner.name + (activePartner.isBot ? ' (bot)' : ' (real)'); cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
         const myGender=document.getElementById('chatMyGender').value;
         if(myGender==='male' && hasPremium && premiumExpiry && Date.now()<premiumExpiry){ const left=Math.floor((premiumExpiry-Date.now())/60000); payDiv.innerHTML='<i class="fas fa-crown"></i> PREMIUM ('+left+'min left) · 100% female match'; }
         else if(myGender==='male') payDiv.innerHTML='<i class="fas fa-clock"></i> No premium · Female chance: 15% <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
@@ -299,7 +452,7 @@ app.get('/{*splat}', (req, res) => {
             showLoading(true);
             const verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId });
             showLoading(false);
-            if(verifyRes.success){ showToast("Payment successful! Premium activated for 30 min.",'success'); await checkPremium(); updateUI(); }
+            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); updateUI(); }
             else showToast("Payment verification failed.",'error');
         }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
         const rzp = new Razorpay(options);
@@ -312,7 +465,7 @@ app.get('/{*splat}', (req, res) => {
     let verified=false;
     verifyBtn.onclick=()=>{ verified=true; verifyBtn.innerHTML='<i class="fas fa-check-circle"></i> Verified ✓'; verifyBtn.classList.add('verified'); document.getElementById('verifyStatus').innerHTML='<span style="color:#10b981;">✓ Verified</span>'; goBtn.disabled=!(acceptCheck.checked && verified); };
     acceptCheck.onchange=()=>{ goBtn.disabled=!(acceptCheck.checked && verified); };
-    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Welcome! Select filters and click 'Find Partner'. Real payments active."); };
+    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching active! Invite friends – when two click 'Find Partner', they'll chat together."); };
     document.getElementById('findChatBtn').onclick=findMatch;
     document.getElementById('endChatPageBtn').onclick=endChat;
     document.getElementById('sendChatMsgBtn').onclick=sendMessage;
@@ -327,8 +480,8 @@ app.get('/{*splat}', (req, res) => {
   `);
 });
 
-// Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🔑 Razorpay integration: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys in environment variables or directly in code' : 'active'}`);
+  console.log(`🔑 Razorpay: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys' : 'active'}`);
+  console.log(`👥 Real user matching: enabled (friends will be paired together)`);
 });
