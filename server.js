@@ -212,7 +212,7 @@ app.post('/api/end-chat', (req, res) => {
 });
 
 // ------------------- FRONTEND (same as before, but with updated messaging) -------------------
-app.get('*', (req, res) => {
+app.get('/*splat', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
