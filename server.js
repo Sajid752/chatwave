@@ -123,7 +123,7 @@ function fallbackReply(userMsg, botName) {
 async function getAIReply(userMessage, botName, botGender, userGenderVal, conversationHistory) {
   if (genAI) {
     try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
       const chat = model.startChat({
         history: conversationHistory.map(msg => ({
           role: msg.role,
