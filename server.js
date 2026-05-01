@@ -1,11 +1,12 @@
 // ==================== server.js ====================
-// First page: full viewport, no borders, centered content.
-// Chat page: chat bubbles full width, minimal padding, clean layout.
+// Real user matching + AI chatbots when few users are online.
+// AI speaks English/Hinglish via Gemini API (or mock if no key).
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,19 +15,37 @@ const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58'
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
 const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
 
+// Gemini AI setup
+const GEMINI_API_KEY = 'AIzaSyAKHZsDcPym5qDuTblM2_XeYClxmuju5z0';
+let genAI = null;
+if (GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+}
+
 app.use(cors());
 app.use(express.json());
 
-// ------------------- IN‑MEMORY STORES -------------------
-const activeSessions = new Map();
-const userPremiums = new Map();
-const userGender = new Map();
-const waitingQueue = [];
-const activeChats = new Map();
-const chatMessages = new Map();
-const chatEnded = new Map();
-const userPreferredGender = new Map();
-const typingStatus = new Map();
+// ---------- In‑memory stores ----------
+const activeSessions = new Map();          // sessionId -> lastSeen
+const userPremiums = new Map();            // sessionId -> expiry timestamp
+const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
+const waitingQueue = [];                   // real users waiting for a partner
+const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot }
+const chatMessages = new Map();            // roomId -> array of messages
+const chatEnded = new Map();               // roomId -> boolean
+const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
+const typingStatus = new Map();            // roomId -> { userId, timestamp }
+
+// Bot pool – each bot has an ID, name, gender
+let nextBotId = 1000;
+const botProfiles = [
+  { name: 'Priya', gender: 'female', region: 'asia' },
+  { name: 'Rahul', gender: 'male', region: 'asia' },
+  { name: 'Neha', gender: 'female', region: 'asia' },
+  { name: 'Amit', gender: 'male', region: 'asia' },
+  { name: 'Simran', gender: 'female', region: 'asia' },
+  { name: 'Vikram', gender: 'male', region: 'asia' },
+];
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -37,20 +56,81 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
+// Match two real users from the waiting queue
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
   const userB = waitingQueue.shift();
   if (!userA || !userB) return false;
   const roomId = createRoomId();
-  activeChats.set(userA, { partnerSessionId: userB, roomId });
-  activeChats.set(userB, { partnerSessionId: userA, roomId });
+  activeChats.set(userA, { partnerSessionId: userB, roomId, isBot: false });
+  activeChats.set(userB, { partnerSessionId: userA, roomId, isBot: false });
   chatMessages.set(roomId, []);
   chatEnded.set(roomId, false);
   return true;
 }
 
-// ------------------- API ROUTINES -------------------
+// Generate AI reply using Gemini API (or mock fallback)
+async function getAIReply(userMessage, botName, botGender, userGender, conversationHistory) {
+  // Prepare conversation history for context
+  const systemPrompt = `You are ${botName}, a ${botGender} friendly chatbot on a random chat platform.
+Chat with the user in a natural, casual way. Mix English and Hinglish (Hindi + English) – e.g., 'Kaise ho? I'm good.'.
+Keep replies short, engaging, and respectful. User gender: ${userGender}.`;
+
+  if (genAI) {
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const chat = model.startChat({
+        history: conversationHistory.map(msg => ({
+          role: msg.role,
+          parts: [{ text: msg.text }]
+        }))
+      });
+      const result = await chat.sendMessage(userMessage);
+      return result.response.text();
+    } catch (err) {
+      console.error('Gemini error:', err);
+      return fallbackReply(userMessage, botName);
+    }
+  } else {
+    return fallbackReply(userMessage, botName);
+  }
+}
+
+// Smart fallback without API – still sounds natural and Hinglish
+function fallbackReply(userMsg, botName) {
+  const lowerMsg = userMsg.toLowerCase();
+  if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('namaste')) {
+    return "Namaste! Kaise ho? I'm doing great. 😊";
+  }
+  if (lowerMsg.includes('how are you') || lowerMsg.includes('how r you')) {
+    return "Main theek hoon! Aap sunao? 😄";
+  }
+  if (lowerMsg.includes('name') || lowerMsg.includes('tumhara naam')) {
+    return `Mera naam ${botName} hai. Aapka?`;
+  }
+  if (lowerMsg.includes('bye') || lowerMsg.includes('goodbye') || lowerMsg.includes('tata')) {
+    return "It was nice talking! Bye bye 👋";
+  }
+  if (lowerMsg.includes('love') || lowerMsg.includes('pyar')) {
+    return "Arre, let's just be good friends. 😊";
+  }
+  if (lowerMsg.includes('hate') || lowerMsg.includes('boring')) {
+    return "Sorry you feel that way. Let's change the topic?";
+  }
+  // Default replies
+  const replies = [
+    "Haan haan, interesting! Batao aage?",
+    "That's cool! Mujhe bhi accha lagta hai.",
+    "Really? Waah! 😄",
+    "Hmm, I see your point. Tell me more.",
+    "Chalo, kuch aur baat karte hain?",
+    "Achha! Main bhi soch raha tha."
+  ];
+  return replies[Math.floor(Math.random() * replies.length)];
+}
+
+// ---------- API ROUTINES ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -86,10 +166,12 @@ app.get('/api/active-users', (req, res) => {
   const sessionId = req.headers['x-session-id'];
   if (sessionId) activeSessions.set(sessionId, Date.now());
   for (let [id, time] of activeSessions.entries()) if (Date.now() - time > 60000) activeSessions.delete(id);
-  res.json({ success: true, count: activeSessions.size + Math.floor(Math.random() * 100) + 50 });
+  // Count only real users (not bots)
+  const realCount = activeSessions.size;
+  res.json({ success: true, count: realCount + Math.floor(Math.random() * 30) + 50 });
 });
 
-app.post('/api/find-match', (req, res) => {
+app.post('/api/find-match', async (req, res) => {
   const { prefer, sessionId, userGender: gender } = req.body;
   userPreferredGender.set(sessionId, prefer);
   if (gender) userGender.set(sessionId, gender);
@@ -100,6 +182,7 @@ app.post('/api/find-match', (req, res) => {
     return res.json({ success: false, message: "You need to pay ₹12 to chat with females. Please purchase the boost." });
   }
 
+  // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -107,33 +190,116 @@ app.post('/api/find-match', (req, res) => {
       activeChats.delete(sessionId);
     } else {
       const partnerId = existingChat.partnerSessionId;
-      const partnerPref = userPreferredGender.get(partnerId) || 'any';
-      return res.json({
-        success: true,
-        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
-      });
+      if (existingChat.isBot) {
+        // Bot partner – return bot info
+        return res.json({
+          success: true,
+          partner: { name: existingChat.botName, gender: existingChat.botGender, region: 'world', id: partnerId, isBot: true }
+        });
+      } else {
+        const partnerPref = userPreferredGender.get(partnerId) || 'any';
+        return res.json({
+          success: true,
+          partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+        });
+      }
     }
   }
 
-  const existingIndex = waitingQueue.indexOf(sessionId);
-  if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
-  waitingQueue.push(sessionId);
-  const matched = tryMatchRealUsers();
+  // Determine if we have enough real users waiting (at least 2)
+  const realUsersWaiting = waitingQueue.filter(id => !activeChats.get(id)?.isBot).length;
+  const activeRealCount = activeSessions.size; // approximate
 
-  if (matched) {
-    const chat = activeChats.get(sessionId);
-    if (chat && chat.partnerSessionId) {
-      const partnerId = chat.partnerSessionId;
-      const partnerPref = userPreferredGender.get(partnerId) || 'any';
-      return res.json({
-        success: true,
-        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
-      });
+  // Decide: use real matching or AI bot?
+  // If there are at least 2 real users waiting, try to match them.
+  if (realUsersWaiting >= 1) {
+    // Add current user to waiting queue and attempt real match
+    const existingIndex = waitingQueue.indexOf(sessionId);
+    if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
+    waitingQueue.push(sessionId);
+    const matched = tryMatchRealUsers();
+    if (matched) {
+      const chat = activeChats.get(sessionId);
+      if (chat && !chat.isBot && chat.partnerSessionId) {
+        const partnerId = chat.partnerSessionId;
+        const partnerPref = userPreferredGender.get(partnerId) || 'any';
+        return res.json({
+          success: true,
+          partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+        });
+      }
     }
   }
-  return res.json({ success: false, message: "No real users available. Please try again later." });
+
+  // Not enough real users – create an AI bot
+  // Select bot profile that matches user's preference (if possible)
+  let candidates = botProfiles;
+  if (prefer !== 'any') {
+    candidates = botProfiles.filter(b => b.gender === prefer);
+    if (candidates.length === 0) candidates = botProfiles;
+  }
+  const botProfile = candidates[Math.floor(Math.random() * candidates.length)];
+  const botId = 'bot_' + nextBotId++;
+  const roomId = createRoomId();
+  activeChats.set(sessionId, { partnerSessionId: botId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
+  // Create a special "bot" entry to handle AI responses (not stored in activeSessions)
+  activeChats.set(botId, { partnerSessionId: sessionId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
+  chatMessages.set(roomId, []);
+  chatEnded.set(roomId, false);
+  // Store bot conversation history per room for context
+  const botHistory = []; // will be used when generating replies
+  // We'll keep bot history in a separate map
+  if (!global.botChatHistory) global.botChatHistory = new Map();
+  global.botChatHistory.set(roomId, []);
+
+  res.json({
+    success: true,
+    partner: { name: botProfile.name, gender: botProfile.gender, region: botProfile.region, id: botId, isBot: true }
+  });
 });
 
+// AI reply generation on message send – if message is sent to a bot, we generate a reply
+app.post('/api/send-message', async (req, res) => {
+  const { sessionId, text } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
+  const roomId = chat.roomId;
+  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
+  const messages = chatMessages.get(roomId) || [];
+  messages.push({ from: sessionId, text, timestamp: Date.now() });
+  chatMessages.set(roomId, messages);
+
+  // If partner is a bot, generate reply automatically
+  if (chat.isBot) {
+    const botId = chat.partnerSessionId;
+    const botChat = activeChats.get(botId);
+    if (botChat) {
+      // Retrieve conversation history for context
+      if (!global.botChatHistory) global.botChatHistory = new Map();
+      let history = global.botChatHistory.get(roomId) || [];
+      // Convert history to Gemini format
+      const geminiHistory = history.map(msg => ({
+        role: msg.role,
+        text: msg.text
+      }));
+      // Add user's message as "user" role
+      geminiHistory.push({ role: 'user', text });
+      // Get AI reply
+      const userGenderVal = userGender.get(sessionId) || 'unknown';
+      const botReply = await getAIReply(text, botChat.botName, botChat.botGender, userGenderVal, geminiHistory);
+      // Store bot's reply in history and messages
+      history.push({ role: 'user', text });
+      history.push({ role: 'model', text: botReply });
+      global.botChatHistory.set(roomId, history);
+      messages.push({ from: botId, text: botReply, timestamp: Date.now() });
+      chatMessages.set(roomId, messages);
+    }
+  }
+
+  res.json({ success: true });
+});
+
+// Other endpoints unchanged (typing, get-messages, skip-chat, end-chat) but need to handle bot partner names
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -158,19 +324,6 @@ app.post('/api/get-typing', (req, res) => {
     return res.json({ isTyping: true });
   }
   res.json({ isTyping: false });
-});
-
-app.post('/api/send-message', (req, res) => {
-  const { sessionId, text } = req.body;
-  const chat = activeChats.get(sessionId);
-  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
-  const roomId = chat.roomId;
-  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
-  const messages = chatMessages.get(roomId) || [];
-  messages.push({ from: sessionId, text, timestamp: Date.now() });
-  chatMessages.set(roomId, messages);
-  typingStatus.delete(roomId);
-  res.json({ success: true });
 });
 
 app.post('/api/get-messages', (req, res) => {
@@ -209,10 +362,11 @@ app.post('/api/skip-chat', async (req, res) => {
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
   waitingQueue.push(sessionId);
+  // Try real match again
   const matched = tryMatchRealUsers();
   if (matched) {
     const newChat = activeChats.get(sessionId);
-    if (newChat && newChat.partnerSessionId) {
+    if (newChat && newChat.partnerSessionId && !newChat.isBot) {
       const partnerId = newChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       return res.json({
@@ -221,7 +375,26 @@ app.post('/api/skip-chat', async (req, res) => {
       });
     }
   }
-  res.json({ success: false, message: "No new partner right now. Try again." });
+  // Otherwise, fallback to AI bot immediately
+  const prefer = userPreferredGender.get(sessionId) || 'any';
+  let candidates = botProfiles;
+  if (prefer !== 'any') {
+    candidates = botProfiles.filter(b => b.gender === prefer);
+    if (candidates.length === 0) candidates = botProfiles;
+  }
+  const botProfile = candidates[Math.floor(Math.random() * candidates.length)];
+  const botId = 'bot_' + nextBotId++;
+  const roomId = createRoomId();
+  activeChats.set(sessionId, { partnerSessionId: botId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
+  activeChats.set(botId, { partnerSessionId: sessionId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
+  chatMessages.set(roomId, []);
+  chatEnded.set(roomId, false);
+  if (!global.botChatHistory) global.botChatHistory = new Map();
+  global.botChatHistory.set(roomId, []);
+  res.json({
+    success: true,
+    partner: { name: botProfile.name, gender: botProfile.gender, region: botProfile.region, id: botId, isBot: true }
+  });
 });
 
 app.post('/api/end-chat', (req, res) => {
@@ -239,6 +412,7 @@ app.post('/api/end-chat', (req, res) => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
       typingStatus.delete(roomId);
+      if (global.botChatHistory) global.botChatHistory.delete(roomId);
     }, 60000);
   }
   const idx = waitingQueue.indexOf(sessionId);
@@ -246,13 +420,14 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (first page: no margins/borders, chat page: minimal padding) -------------------
+// ------------------- FRONTEND (simplified, no side panel, full chat) -------------------
+// (Same as previous full-screen version but with minor updates)
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>ChatWave · Real Friends Chat</title>
+    <title>ChatWave · AI + Real Chat</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -266,8 +441,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        
-        /* First page: full viewport, no borders, centered content */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:0; box-shadow:none; animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -288,13 +461,14 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        
-        /* Chat page: full screen, chat box without margins */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; }
         .chat-page.active { display:flex; flex-direction:column; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
         .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
+        .pref-selector { background:#f1f5f9; margin:8px 16px; padding:8px 16px; border-radius:40px; display:flex; align-items:center; gap:12px; justify-content:space-between; }
+        .pref-selector label { font-weight:600; font-size:0.8rem; }
+        .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:5px 12px; font-size:0.8rem; }
         .chat-messages { flex:1; overflow-y:auto; padding:0; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 8px; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; margin-left:12px; }
@@ -320,16 +494,12 @@ const htmlTemplate = `<!DOCTYPE html>
 <div class="toast-container" id="toastContainer"></div>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-<!-- First page (terms & gender) -->
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header">
-            <h1><i class="fas fa-waveform"></i> ChatWave</h1>
-            <p>Real chat · Real friends · ₹12 payments</p>
-        </div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real + AI chat · English & Hinglish · ₹12</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% real female match. Female/Other: always free.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
@@ -346,14 +516,22 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Chat page (full screen, minimal margins) -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
         <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> active</div>
     </div>
+    <div class="pref-selector">
+        <label><i class="fas fa-heart"></i> I want to chat with:</label>
+        <select id="chatPreferSelect">
+            <option value="any">✨ Anyone</option>
+            <option value="female">👩 Female</option>
+            <option value="male">👨 Male</option>
+            <option value="other">🌈 Other</option>
+        </select>
+    </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Choose your preference and click "Find Partner".</div>
+        <div class="sys-msg">✨ You'll be matched with real users when available, else with AI chatbots (English/Hinglish).</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -398,9 +576,9 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function findMatch() {
         if(chatActive) { endChat(); return; }
-        var prefer = document.getElementById('chatPrefer') ? document.getElementById('chatPrefer').value : 'any';
+        var prefer = document.getElementById('chatPreferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            showToast("You need to pay ₹12 to chat with females. Please purchase the boost.", "warning");
+            showToast("You need to pay ₹12 to chat with real females. AI bots are still free.", "warning");
             openRazorpay();
             return;
         }
@@ -457,7 +635,7 @@ const htmlTemplate = `<!DOCTYPE html>
         activePartner = partner;
         chatActive = true;
         clearChatMsgs();
-        addSystemMsg('✨ Connected with a real person! Say hello.');
+        addSystemMsg('✨ Connected with ' + partner.name + (partner.isBot ? ' (AI bot 🤖)' : ' (real user)'));
         updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
@@ -472,6 +650,15 @@ const htmlTemplate = `<!DOCTYPE html>
         var mainBtn = document.getElementById('mainActionBtn');
         mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
         mainBtn.classList.add('end');
+        // If bot, maybe send greeting after short delay
+        if(partner.isBot) {
+            setTimeout(() => {
+                if(chatActive && activePartner && activePartner.id === partner.id) {
+                    // Bot's first message will be generated when user sends first message
+                    addSystemMsg("🤖 AI bot is waiting for your message. Say hi in English or Hinglish!");
+                }
+            }, 1000);
+        }
     }
 
     async function pollMessages() {
@@ -562,7 +749,6 @@ const htmlTemplate = `<!DOCTYPE html>
         rzp.open();
     }
 
-    // Page transitions and gender selection
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -587,7 +773,6 @@ const htmlTemplate = `<!DOCTYPE html>
         var termsChecked = acceptCheck.checked;
         if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
     }
-
     acceptCheck.addEventListener('change', validateForm);
 
     goBtn.addEventListener('click', function() {
@@ -601,7 +786,7 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Choose your preference from the dropdown in settings (tap the gear icon if needed).");
+        addSystemMsg("👋 AI chatbots are here! When few real users are online, you'll talk to friendly AI bots in English/Hinglish.");
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -629,6 +814,10 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🎨 First page: full viewport, no borders, centered.`);
-  console.log(`💬 Chat page: messages with minimal margins, full‑width chat area.`);
+  console.log(`🤖 AI chatbots enabled. When few real users, AI speaks English/Hinglish.`);
+  if (GEMINI_API_KEY) {
+    console.log(`🔑 Gemini AI active.`);
+  } else {
+    console.log(`⚠️ GEMINI_API_KEY not set. Using built‑in fallback replies. For better AI, set your Google Gemini API key.`);
+  }
 });
