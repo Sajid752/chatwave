@@ -1,42 +1,33 @@
 // ==================== server.js ====================
-// Gemini AI is optional. If module not installed, uses fallback AI (English/Hinglish).
-// Works on Render without extra npm install.
+// Real Gemini AI chatbots + Boost button next to active users
+// Payment only for male seeking female
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
-
-// Optional Gemini AI – safely try to load
-let GoogleGenerativeAI = null;
-try {
-  const genAiModule = require('@google/generative-ai');
-  GoogleGenerativeAI = genAiModule.GoogleGenerativeAI;
-} catch (err) {
-  console.log('📦 @google/generative-ai not installed. Using built-in AI fallback.');
-}
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
-const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
-
-// Gemini AI setup only if module and key present
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
+
+const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
 let genAI = null;
-if (GoogleGenerativeAI && GEMINI_API_KEY) {
+if (GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
   console.log('✅ Gemini AI active.');
 } else {
-  console.log('⚠️ Gemini AI not active – using fallback replies.');
+  console.log('⚠️ GEMINI_API_KEY not set. AI will use fallback replies.');
 }
 
 app.use(cors());
 app.use(express.json());
 
-// ---------- In-memory stores (same as before) ----------
+// ---------- In‑memory stores ----------
 const activeSessions = new Map();
 const userPremiums = new Map();
 const userGender = new Map();
@@ -47,7 +38,6 @@ const chatEnded = new Map();
 const userPreferredGender = new Map();
 const typingStatus = new Map();
 
-// Bot profiles
 let nextBotId = 1000;
 const botProfiles = [
   { name: 'Priya', gender: 'female', region: 'asia' },
@@ -67,7 +57,6 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
-// Match two real users
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
@@ -81,7 +70,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// Fallback AI reply (no API key / no module)
+// Fallback AI (when no Gemini)
 function fallbackReply(userMsg, botName) {
   const lowerMsg = userMsg.toLowerCase();
   if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('namaste')) {
@@ -113,7 +102,7 @@ function fallbackReply(userMsg, botName) {
   return replies[Math.floor(Math.random() * replies.length)];
 }
 
-// Real AI reply using Gemini (if available)
+// Real AI using Gemini
 async function getAIReply(userMessage, botName, botGender, userGenderVal, conversationHistory) {
   if (genAI) {
     try {
@@ -135,7 +124,7 @@ async function getAIReply(userMessage, botName, botGender, userGenderVal, conver
   }
 }
 
-// ---------- API Routes (unchanged except bot AI integration) ----------
+// ---------- API routes ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -183,10 +172,10 @@ app.post('/api/find-match', async (req, res) => {
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
-    return res.json({ success: false, message: "You need to pay ₹12 to chat with real females. AI bots are still free." });
+    return res.json({ success: false, message: "You need to pay ₹12 to chat with real females. Click the Boost button." });
   }
 
-  // If already in a chat
+  // Existing chat check
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -209,7 +198,7 @@ app.post('/api/find-match', async (req, res) => {
     }
   }
 
-  // Real user matching attempt
+  // Real user matching
   const realUsersWaiting = waitingQueue.filter(id => !activeChats.get(id)?.isBot).length;
   if (realUsersWaiting >= 1) {
     const existingIndex = waitingQueue.indexOf(sessionId);
@@ -229,7 +218,7 @@ app.post('/api/find-match', async (req, res) => {
     }
   }
 
-  // No real partner – create AI bot
+  // Fallback to AI bot
   let candidates = botProfiles;
   if (prefer !== 'any') {
     candidates = botProfiles.filter(b => b.gender === prefer);
@@ -261,7 +250,6 @@ app.post('/api/send-message', async (req, res) => {
   messages.push({ from: sessionId, text, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
 
-  // If partner is a bot, generate reply automatically
   if (chat.isBot) {
     const botId = chat.partnerSessionId;
     const botChat = activeChats.get(botId);
@@ -357,7 +345,6 @@ app.post('/api/skip-chat', async (req, res) => {
       });
     }
   }
-  // Fallback to bot
   const prefer = userPreferredGender.get(sessionId) || 'any';
   let candidates = botProfiles;
   if (prefer !== 'any') {
@@ -402,7 +389,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (same as previous, full‑screen, preference dropdown) -------------------
+// ------------------- FRONTEND (Boost button next to active users) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -442,12 +429,15 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; }
-        .chat-page.active { display:flex; flex-direction:column; }
-        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+        .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
+        .chat-page.active { display:flex; }
+        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
+        .header-actions { display:flex; align-items:center; gap:12px; }
         .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
-        .pref-selector { background:#f1f5f9; margin:8px 16px; padding:8px 16px; border-radius:40px; display:flex; align-items:center; gap:12px; justify-content:space-between; }
+        .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
+        .boost-btn.visible { display:block; }
+        .pref-selector { background:#f1f5f9; margin:8px 16px; padding:8px 16px; border-radius:40px; display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap; }
         .pref-selector label { font-weight:600; font-size:0.8rem; }
         .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:5px 12px; font-size:0.8rem; }
         .chat-messages { flex:1; overflow-y:auto; padding:0; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
@@ -468,6 +458,7 @@ const htmlTemplate = `<!DOCTYPE html>
             .msg { max-width:90%; }
             .action-buttons { flex-direction:column; }
             .action-buttons button { width:100%; }
+            .header-actions { flex-direction:row; }
         }
     </style>
 </head>
@@ -500,7 +491,10 @@ const htmlTemplate = `<!DOCTYPE html>
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
-        <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> active</div>
+        <div class="header-actions">
+            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> active</div>
+            <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹12 Boost</button>
+        </div>
     </div>
     <div class="pref-selector">
         <label><i class="fas fa-heart"></i> I want to chat with:</label>
@@ -512,7 +506,7 @@ const htmlTemplate = `<!DOCTYPE html>
         </select>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Real users + AI bots (English/Hinglish). When few real users, AI will talk to you naturally.</div>
+        <div class="sys-msg">✨ Real users + AI bots (English/Hinglish). Click Boost (₹12) to unlock real female matches.</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -552,15 +546,25 @@ const htmlTemplate = `<!DOCTYPE html>
         var res = await apiCall('/api/check-premium', 'POST', { sessionId }); 
         hasPremium = res.hasPremium; 
         premiumExpiry = res.expiry; 
+        updateBoostButtonVisibility();
     }
     async function getActiveUsers() { var res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
+
+    function updateBoostButtonVisibility() {
+        var boostBtn = document.getElementById('boostHeaderBtn');
+        var prefer = document.getElementById('chatPreferSelect').value;
+        if(userGender === 'male' && prefer === 'female' && !hasPremium) {
+            boostBtn.classList.add('visible');
+        } else {
+            boostBtn.classList.remove('visible');
+        }
+    }
 
     async function findMatch() {
         if(chatActive) { endChat(); return; }
         var prefer = document.getElementById('chatPreferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            showToast("You need to pay ₹12 to chat with real females. AI bots are still free.", "warning");
-            openRazorpay();
+            showToast("You need to pay ₹12 to chat with real females. Click the Boost button.", "warning");
             return;
         }
         showLoading(true);
@@ -721,14 +725,14 @@ const htmlTemplate = `<!DOCTYPE html>
             showLoading(true);
             var verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId });
             showLoading(false);
-            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); }
+            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); updateBoostButtonVisibility(); }
             else showToast("Payment verification failed.",'error');
         }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
         var rzp = new Razorpay(options);
         rzp.open();
     }
 
-    // Page transitions
+    // Page transitions and gender selection
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -767,13 +771,16 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 AI bots are here! When few real users are online, you'll talk to friendly AI bots in English/Hinglish.");
+        addSystemMsg("👋 AI bots are here! Male users: select 'Female' to see the Boost button (₹12) for real female matches.");
+        document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
+        updateBoostButtonVisibility();
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
     document.getElementById('skipChatBtn').onclick = skipChat;
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
     document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
+    document.getElementById('boostHeaderBtn').onclick = openRazorpay;
     
     var msgInputChat = document.getElementById('chatMsgInput');
     msgInputChat.addEventListener('input', function() {
@@ -795,5 +802,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🤖 AI chatbots enabled (fallback). Real AI requires GEMINI_API_KEY and installed module.`);
+  console.log(`🤖 Real Gemini AI ${GEMINI_API_KEY ? 'active' : 'inactive (fallback)'}`);
+  console.log(`💰 Boost button appears for male users when they select "Female"`);
 });
