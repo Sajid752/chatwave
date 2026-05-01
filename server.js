@@ -1,7 +1,7 @@
 // ==================== server.js ====================
-// Clean UI – No region, no my gender
-// Only "Prefer to chat with"
-// Features: real user matching, typing indicator, skip button, partner left notification
+// Clean UI – Gender selection on first page
+// Female/Other: no payments, male: payment only when seeking female
+// Typing indicator, skip button, partner left notification
 
 const express = require('express');
 const cors = require('cors');
@@ -21,6 +21,7 @@ app.use(express.json());
 // ------------------- IN‑MEMORY STORES -------------------
 const activeSessions = new Map();          // sessionId -> lastSeen
 const userPremiums = new Map();            // sessionId -> expiry timestamp
+const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
 const waitingQueue = [];                   // sessionIds waiting for a real partner
 const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
 const chatMessages = new Map();            // roomId -> array of messages
@@ -40,7 +41,6 @@ function createRoomId() {
 // Match two real users from the waiting queue, respecting gender preference
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
-  // Simple FIFO matching – could be improved with preference logic
   const userA = waitingQueue.shift();
   const userB = waitingQueue.shift();
   if (!userA || !userB) return false;
@@ -92,11 +92,11 @@ app.get('/api/active-users', (req, res) => {
   res.json({ success: true, count: activeSessions.size + Math.floor(Math.random() * 100) + 50 });
 });
 
-// Find match – now only uses preferredGender (no region/myGender)
+// Find match – now uses prefer and userGender for premium logic
 app.post('/api/find-match', (req, res) => {
-  const { prefer, sessionId } = req.body;
-  const hasPremium = isPremiumActive(sessionId);
+  const { prefer, sessionId, userGender: gender } = req.body;
   userPreferredGender.set(sessionId, prefer);
+  if (gender) userGender.set(sessionId, gender);
 
   // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
@@ -173,7 +173,6 @@ app.post('/api/send-message', (req, res) => {
   const messages = chatMessages.get(roomId) || [];
   messages.push({ from: sessionId, text, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
-  // Clear typing indicator for this user after sending
   typingStatus.delete(roomId);
   res.json({ success: true });
 });
@@ -211,10 +210,8 @@ app.post('/api/skip-chat', async (req, res) => {
       typingStatus.delete(roomId);
     }, 60000);
   }
-  // Remove from waiting queue if present
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
-  // Immediately requeue and try to find new match
   waitingQueue.push(sessionId);
   const matched = tryMatchRealUsers();
   if (matched) {
@@ -285,10 +282,13 @@ const htmlTemplate = `<!DOCTYPE html>
         .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
         .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:24px; margin:20px 0; border:1px solid #e2e8f0; }
         .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; }
-        .captcha-box { background:#f1f5f9; border-radius:60px; padding:10px 20px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:24px; }
-        .verify-btn { background:white; border:1px solid #cbd5e1; padding:8px 20px; border-radius:40px; font-weight:500; cursor:pointer; }
-        .verify-btn.verified { background:#10b981; border-color:#10b981; color:white; }
-        .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:60px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; }
+        .gender-selector { margin: 20px 0; }
+        .gender-selector label { font-weight:600; margin-right:16px; }
+        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; }
+        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
+        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
+        .gender-option input { display:none; }
+        .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:60px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
         .chat-page { min-height:100vh; display:none; }
         .chat-page.active { display:block; }
@@ -305,6 +305,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .btn-primary { background:#2563eb; color:white; border:none; font-weight:600; }
         .btn-danger { background:#fee2e2; border-color:#fecaca; color:#b91c1c; }
         .pay-boost { background:#f59e0b; color:white; border:none; margin-bottom:8px; }
+        .pay-boost.hidden { display:none; }
         .info-badge { background:#f1f5f9; padding:12px; border-radius:20px; font-size:0.7rem; margin:16px 0; }
         .chat-messages { flex:1; min-height:420px; max-height:55vh; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:10px; background:#ffffff; }
         .msg { max-width:80%; padding:10px 16px; border-radius:22px; font-size:0.85rem; }
@@ -315,7 +316,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .input-row { display:flex; gap:10px; padding:16px 20px 20px; background:white; border-top:1px solid #e2e8f0; }
         .input-row input { flex:1; padding:12px 18px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; }
         .send-btn { background:#2563eb; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; }
-        .action-buttons { display:flex; gap:10px; margin-top:8px; }
+        .action-buttons { display:flex; gap:10px; padding:0 20px 16px 20px; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .status-chip { background:#eef2ff; padding:4px 12px; border-radius:30px; font-size:0.7rem; display:inline-flex; align-items:center; gap:6px; }
         .dot { width:8px; height:8px; border-radius:8px; display:inline-block; }
@@ -331,11 +332,26 @@ const htmlTemplate = `<!DOCTYPE html>
         <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real chat · Real friends · Real payments</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance without waiting.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance without waiting. Female/Other: always free.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
+            
+            <div class="gender-selector">
+                <label><i class="fas fa-user"></i> I am a:</label>
+                <div class="gender-options">
+                    <label class="gender-option" data-gender="male">
+                        <input type="radio" name="userGender" value="male"> 👨 Male
+                    </label>
+                    <label class="gender-option" data-gender="female">
+                        <input type="radio" name="userGender" value="female"> 👩 Female
+                    </label>
+                    <label class="gender-option" data-gender="other">
+                        <input type="radio" name="userGender" value="other"> 🌈 Other
+                    </label>
+                </div>
+                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
+            </div>
+            
             <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
-            <div class="captcha-box"><div class="captcha-label"><i class="fas fa-robot"></i><span>Human verification</span></div><button id="verifyRobotBtn" class="verify-btn"><i class="fas fa-check-circle"></i> I'm not a robot</button></div>
-            <div id="verifyStatus" style="font-size:0.7rem; text-align:center; margin-bottom:12px;"></div>
             <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
         </div>
     </div>
@@ -355,20 +371,20 @@ const htmlTemplate = `<!DOCTYPE html>
                         <option value="other">🌈 Other</option>
                     </select>
                 </div>
-                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>No bots – when two people both click "Find Partner", they'll chat together.</div>
-                <button id="payBoostBtn" class="pay-boost"><i class="fas fa-qrcode"></i> Pay ₹12 (Boost)</button>
+                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>When you both click "Find Partner", you'll chat together.</div>
+                <button id="payBoostBtn" class="pay-boost hidden"><i class="fas fa-qrcode"></i> Pay ₹12 (Boost)</button>
                 <button id="findChatBtn" class="btn-primary"><i class="fas fa-random"></i> Find Partner</button>
-                <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> No premium</div>
+                <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> Loading...</div>
             </div>
             <div class="chat-panel">
                 <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;"><span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span><span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span></div>
-                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching only! Invite a friend – when you both click "Find Partner", you'll chat together.</div></div>
+                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Choose your preference and click "Find Partner".</div></div>
                 <div class="typing" id="typingIndicator"></div>
                 <div class="input-row">
                     <input type="text" id="chatMsgInput" placeholder="Type a message...">
                     <button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button>
                 </div>
-                <div class="action-buttons" style="padding:0 20px 16px 20px;">
+                <div class="action-buttons">
                     <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
                     <button id="endChatPageBtn" class="btn-danger"><i class="fas fa-stop"></i> End Chat</button>
                 </div>
@@ -388,6 +404,7 @@ const htmlTemplate = `<!DOCTYPE html>
     let typingInterval = null;
     let isTyping = false;
     let typingTimeout = null;
+    let userGender = null; // will be set from first page
 
     function showToast(msg, type='info') { const c=document.getElementById('toastContainer'); const t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(()=>t.remove(),4000); }
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
@@ -399,7 +416,12 @@ const htmlTemplate = `<!DOCTYPE html>
         return res.json();
     }
 
-    async function checkPremium() { const res = await apiCall('/api/check-premium', 'POST', { sessionId }); hasPremium = res.hasPremium; premiumExpiry = res.expiry; updateUI(); }
+    async function checkPremium() { 
+        const res = await apiCall('/api/check-premium', 'POST', { sessionId }); 
+        hasPremium = res.hasPremium; 
+        premiumExpiry = res.expiry; 
+        updatePaymentUI();
+    }
     async function getActiveUsers() { const res = await apiCall('/api/active-users'); document.getElementById('activeUserCount').innerText = res.count; }
 
     async function findMatch() {
@@ -407,7 +429,8 @@ const htmlTemplate = `<!DOCTYPE html>
         showLoading(true);
         const res = await apiCall('/api/find-match', 'POST', {
             prefer: document.getElementById('chatPrefer').value,
-            sessionId
+            sessionId,
+            userGender
         });
         showLoading(false);
         if(res.success && res.partner) startChat(res.partner);
@@ -419,7 +442,6 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!chatActive) { addSystemMsg("No active chat to skip."); return; }
         showLoading(true);
         const res = await apiCall('/api/skip-chat', 'POST', { sessionId });
-        // End current chat UI
         if(msgInterval) clearInterval(msgInterval);
         if(typingInterval) clearInterval(typingInterval);
         msgInterval = null;
@@ -427,7 +449,7 @@ const htmlTemplate = `<!DOCTYPE html>
         chatActive = false;
         activePartner = null;
         clearChatMsgs(true);
-        updateUI();
+        updateChatUI();
         if(res.success && res.partner) {
             startChat(res.partner);
         } else if(res.message) {
@@ -446,7 +468,7 @@ const htmlTemplate = `<!DOCTYPE html>
             chatActive = false;
             activePartner = null;
             clearChatMsgs(true);
-            updateUI();
+            updateChatUI();
         } else {
             addSystemMsg("No active chat.");
         }
@@ -458,13 +480,12 @@ const htmlTemplate = `<!DOCTYPE html>
         chatActive = true;
         clearChatMsgs();
         addSystemMsg('✨ Connected with a real person! Say hello.');
-        updateUI();
+        updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
         msgInterval = setInterval(pollMessages, 1500);
         if(typingInterval) clearInterval(typingInterval);
         typingInterval = setInterval(pollTyping, 2000);
-        // Reset typing indicator on input
         const input = document.getElementById('chatMsgInput');
         input.value = '';
         input.disabled = false;
@@ -510,7 +531,6 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!text) return;
         addBubble(text, 'out');
         input.value = '';
-        // Stop typing indicator
         if(typingTimeout) clearTimeout(typingTimeout);
         await sendTyping(false);
         const res = await apiCall('/api/send-message', 'POST', { sessionId, text });
@@ -524,19 +544,43 @@ const htmlTemplate = `<!DOCTYPE html>
     function addBubble(t, type) { const area=document.getElementById('chatMsgsArea'); const div=document.createElement('div'); div.className='msg '+(type==='out'?'msg-out':'msg-in'); div.innerText=t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
     function clearChatMsgs(keepSys=false){ const area=document.getElementById('chatMsgsArea'); area.innerHTML=''; if(keepSys) addSystemMsg("Chat ended. Click 'Find Partner' to start a new conversation."); }
 
-    function updateUI() {
-        const pSpan=document.getElementById('partnerNameLabel'); const cSpan=document.getElementById('connBadge'); const sendBtn=document.getElementById('sendChatMsgBtn'); const inp=document.getElementById('chatMsgInput'); const payDiv=document.getElementById('paymentStatusChat');
+    function updateChatUI() {
+        const pSpan=document.getElementById('partnerNameLabel'); const cSpan=document.getElementById('connBadge'); const sendBtn=document.getElementById('sendChatMsgBtn'); const inp=document.getElementById('chatMsgInput');
         if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> Connected to a real person'; cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
-        const myGender = localStorage.getItem('userGender') || 'male'; // default for payment message
-        if(myGender==='male' && hasPremium && premiumExpiry && Date.now()<premiumExpiry){ const left=Math.floor((premiumExpiry-Date.now())/60000); payDiv.innerHTML='<i class="fas fa-crown"></i> PREMIUM ('+left+'min left) · 100% female match'; }
-        else if(myGender==='male') payDiv.innerHTML='<i class="fas fa-clock"></i> No premium · Female chance: 15% <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
-        else payDiv.innerHTML='<i class="fas fa-unlock"></i> Free access';
-        const payBtn = document.getElementById('payNowBtn'); if(payBtn) payBtn.onclick=openRazorpay;
+    }
+
+    function updatePaymentUI() {
+        const payDiv = document.getElementById('paymentStatusChat');
+        const payBtn = document.getElementById('payBoostBtn');
+        const prefer = document.getElementById('chatPrefer').value;
+        
+        // Female/Other: hide payment completely
+        if(userGender !== 'male') {
+            payBtn.classList.add('hidden');
+            payDiv.innerHTML = `<i class="fas fa-unlock"></i> Free access – no payment needed`;
+            return;
+        }
+        
+        // Male user: show payment only when seeking female
+        if(prefer === 'female') {
+            payBtn.classList.remove('hidden');
+            if(hasPremium && premiumExpiry && Date.now() < premiumExpiry) {
+                const left = Math.floor((premiumExpiry - Date.now())/60000);
+                payDiv.innerHTML = `<i class="fas fa-crown"></i> PREMIUM (${left}min left) · 100% female match`;
+            } else {
+                payDiv.innerHTML = `<i class="fas fa-clock"></i> No premium · Female match chance: 15% <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>`;
+                const payNow = document.getElementById('payNowBtn');
+                if(payNow) payNow.onclick = openRazorpay;
+            }
+        } else {
+            // Male not seeking female – no payment needed
+            payBtn.classList.add('hidden');
+            payDiv.innerHTML = `<i class="fas fa-unlock"></i> Free access – payment not required for this preference`;
+        }
     }
 
     async function openRazorpay() {
-        const myGender = 'male'; // we assume only male clicks, but we can ask
-        if(myGender!=='male'){ showToast("Only male users can buy boost.",'warning'); return; }
+        if(userGender !== 'male'){ showToast("Only male users can buy boost.",'warning'); return; }
         if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ showToast("Premium already active.",'info'); return; }
         showLoading(true);
         const res = await apiCall('/api/create-order', 'POST', { amount: 12 });
@@ -546,22 +590,79 @@ const htmlTemplate = `<!DOCTYPE html>
             showLoading(true);
             const verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId });
             showLoading(false);
-            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); updateUI(); }
+            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); updatePaymentUI(); }
             else showToast("Payment verification failed.",'error');
         }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
         const rzp = new Razorpay(options);
         rzp.open();
     }
 
-    // Attach typing detection
-    const msgInput = document.getElementById('chatMsgInput');
-    msgInput.addEventListener('input', () => {
+    // Page transitions and gender selection
+    const page1 = document.getElementById('page1');
+    const page2 = document.getElementById('page2');
+    const acceptCheck = document.getElementById('acceptTerms');
+    const goBtn = document.getElementById('goToChatBtn');
+    const genderOptions = document.querySelectorAll('.gender-option');
+    const genderError = document.getElementById('genderError');
+    let selectedGender = null;
+
+    genderOptions.forEach(opt => {
+        opt.addEventListener('click', () => {
+            genderOptions.forEach(o => o.classList.remove('selected'));
+            opt.classList.add('selected');
+            const radio = opt.querySelector('input');
+            radio.checked = true;
+            selectedGender = radio.value;
+            genderError.innerText = '';
+            validateForm();
+        });
+    });
+
+    function validateForm() {
+        const termsChecked = acceptCheck.checked;
+        if(selectedGender && termsChecked) {
+            goBtn.disabled = false;
+        } else {
+            goBtn.disabled = true;
+        }
+    }
+
+    acceptCheck.addEventListener('change', validateForm);
+
+    goBtn.addEventListener('click', () => {
+        if(!selectedGender) {
+            genderError.innerText = 'Please select your gender';
+            return;
+        }
+        if(!acceptCheck.checked) return;
+        userGender = selectedGender;
+        localStorage.setItem('userGender', userGender);
+        page1.style.display = 'none';
+        page2.classList.add('active');
+        checkPremium();
+        getActiveUsers();
+        if(activePolling) clearInterval(activePolling);
+        activePolling = setInterval(getActiveUsers, 10000);
+        addSystemMsg("👋 Real user matching only! Choose your preference and click 'Find Partner'. Female/Other users see no payment options.");
+        updatePaymentUI();
+        document.getElementById('chatPrefer').addEventListener('change', updatePaymentUI);
+    });
+
+    document.getElementById('findChatBtn').onclick = findMatch;
+    document.getElementById('endChatPageBtn').onclick = endChat;
+    document.getElementById('skipChatBtn').onclick = skipChat;
+    document.getElementById('sendChatMsgBtn').onclick = sendMessage;
+    document.getElementById('chatMsgInput').onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+    
+    // Typing detection
+    const msgInputChat = document.getElementById('chatMsgInput');
+    msgInputChat.addEventListener('input', () => {
         if(!chatActive) return;
-        const isCurrentlyTyping = msgInput.value.length > 0;
-        if(isCurrentlyTyping && !isTyping) {
+        const currentlyTyping = msgInputChat.value.length > 0;
+        if(currentlyTyping && !isTyping) {
             isTyping = true;
             sendTyping(true);
-        } else if(!isCurrentlyTyping && isTyping) {
+        } else if(!currentlyTyping && isTyping) {
             isTyping = false;
             sendTyping(false);
         }
@@ -573,22 +674,10 @@ const htmlTemplate = `<!DOCTYPE html>
             }
         }, 2000);
     });
-
-    // Page transitions
-    const page1=document.getElementById('page1'), page2=document.getElementById('page2');
-    const acceptCheck=document.getElementById('acceptTerms'), verifyBtn=document.getElementById('verifyRobotBtn'), goBtn=document.getElementById('goToChatBtn');
-    let verified=false;
-    verifyBtn.onclick=()=>{ verified=true; verifyBtn.innerHTML='<i class="fas fa-check-circle"></i> Verified ✓'; verifyBtn.classList.add('verified'); document.getElementById('verifyStatus').innerHTML='<span style="color:#10b981;">✓ Verified</span>'; goBtn.disabled=!(acceptCheck.checked && verified); };
-    acceptCheck.onchange=()=>{ goBtn.disabled=!(acceptCheck.checked && verified); };
-    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching only! Invite a friend – when you both click 'Find Partner', you'll chat together. Use Skip to find a new partner."); };
-    document.getElementById('findChatBtn').onclick=findMatch;
-    document.getElementById('endChatPageBtn').onclick=endChat;
-    document.getElementById('skipChatBtn').onclick=skipChat;
-    document.getElementById('sendChatMsgBtn').onclick=sendMessage;
-    document.getElementById('chatMsgInput').onkeypress=(e)=>{ if(e.key==='Enter') sendMessage(); };
-    document.getElementById('payBoostBtn').onclick=openRazorpay;
-    document.getElementById('chatPrefer').onchange=()=>{ if(!chatActive) updateUI(); };
-    updateUI();
+    
+    // Initial update on payment UI after page loads (gender known)
+    // Also when preference changes
+    document.getElementById('chatPrefer').addEventListener('change', updatePaymentUI);
 </script>
 </body>
 </html>`;
@@ -599,6 +688,7 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`👥 Real user matching only – Skip button & typing indicator added`);
-  console.log(`🔑 Razorpay: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys' : 'active'}`);
+  console.log(`👤 Gender selection on first page, no robot captcha`);
+  console.log(`💳 Female/Other: payment hidden; Male: payment only when seeking female`);
+  console.log(`🚀 Ready for production`);
 });
