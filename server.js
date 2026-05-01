@@ -1,12 +1,20 @@
 // ==================== server.js ====================
-// Real user matching + AI chatbots when few users are online.
-// AI speaks English/Hinglish via Gemini API (or mock if no key).
+// Gemini AI is optional. If module not installed, uses fallback AI (English/Hinglish).
+// Works on Render without extra npm install.
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// Optional Gemini AI – safely try to load
+let GoogleGenerativeAI = null;
+try {
+  const genAiModule = require('@google/generative-ai');
+  GoogleGenerativeAI = genAiModule.GoogleGenerativeAI;
+} catch (err) {
+  console.log('📦 @google/generative-ai not installed. Using built-in AI fallback.');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,28 +23,31 @@ const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58'
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
 const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
 
-// Gemini AI setup
-const GEMINI_API_KEY = 'AIzaSyAKHZsDcPym5qDuTblM2_XeYClxmuju5z0';
+// Gemini AI setup only if module and key present
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 let genAI = null;
-if (GEMINI_API_KEY) {
+if (GoogleGenerativeAI && GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  console.log('✅ Gemini AI active.');
+} else {
+  console.log('⚠️ Gemini AI not active – using fallback replies.');
 }
 
 app.use(cors());
 app.use(express.json());
 
-// ---------- In‑memory stores ----------
-const activeSessions = new Map();          // sessionId -> lastSeen
-const userPremiums = new Map();            // sessionId -> expiry timestamp
-const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
-const waitingQueue = [];                   // real users waiting for a partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot }
-const chatMessages = new Map();            // roomId -> array of messages
-const chatEnded = new Map();               // roomId -> boolean
-const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
-const typingStatus = new Map();            // roomId -> { userId, timestamp }
+// ---------- In-memory stores (same as before) ----------
+const activeSessions = new Map();
+const userPremiums = new Map();
+const userGender = new Map();
+const waitingQueue = [];
+const activeChats = new Map();
+const chatMessages = new Map();
+const chatEnded = new Map();
+const userPreferredGender = new Map();
+const typingStatus = new Map();
 
-// Bot pool – each bot has an ID, name, gender
+// Bot profiles
 let nextBotId = 1000;
 const botProfiles = [
   { name: 'Priya', gender: 'female', region: 'asia' },
@@ -56,7 +67,7 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
-// Match two real users from the waiting queue
+// Match two real users
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
@@ -70,34 +81,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// Generate AI reply using Gemini API (or mock fallback)
-async function getAIReply(userMessage, botName, botGender, userGender, conversationHistory) {
-  // Prepare conversation history for context
-  const systemPrompt = `You are ${botName}, a ${botGender} friendly chatbot on a random chat platform.
-Chat with the user in a natural, casual way. Mix English and Hinglish (Hindi + English) – e.g., 'Kaise ho? I'm good.'.
-Keep replies short, engaging, and respectful. User gender: ${userGender}.`;
-
-  if (genAI) {
-    try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const chat = model.startChat({
-        history: conversationHistory.map(msg => ({
-          role: msg.role,
-          parts: [{ text: msg.text }]
-        }))
-      });
-      const result = await chat.sendMessage(userMessage);
-      return result.response.text();
-    } catch (err) {
-      console.error('Gemini error:', err);
-      return fallbackReply(userMessage, botName);
-    }
-  } else {
-    return fallbackReply(userMessage, botName);
-  }
-}
-
-// Smart fallback without API – still sounds natural and Hinglish
+// Fallback AI reply (no API key / no module)
 function fallbackReply(userMsg, botName) {
   const lowerMsg = userMsg.toLowerCase();
   if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('namaste')) {
@@ -118,7 +102,6 @@ function fallbackReply(userMsg, botName) {
   if (lowerMsg.includes('hate') || lowerMsg.includes('boring')) {
     return "Sorry you feel that way. Let's change the topic?";
   }
-  // Default replies
   const replies = [
     "Haan haan, interesting! Batao aage?",
     "That's cool! Mujhe bhi accha lagta hai.",
@@ -130,7 +113,29 @@ function fallbackReply(userMsg, botName) {
   return replies[Math.floor(Math.random() * replies.length)];
 }
 
-// ---------- API ROUTINES ----------
+// Real AI reply using Gemini (if available)
+async function getAIReply(userMessage, botName, botGender, userGenderVal, conversationHistory) {
+  if (genAI) {
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const chat = model.startChat({
+        history: conversationHistory.map(msg => ({
+          role: msg.role,
+          parts: [{ text: msg.text }]
+        }))
+      });
+      const result = await chat.sendMessage(userMessage);
+      return result.response.text();
+    } catch (err) {
+      console.error('Gemini error:', err);
+      return fallbackReply(userMessage, botName);
+    }
+  } else {
+    return fallbackReply(userMessage, botName);
+  }
+}
+
+// ---------- API Routes (unchanged except bot AI integration) ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -166,7 +171,6 @@ app.get('/api/active-users', (req, res) => {
   const sessionId = req.headers['x-session-id'];
   if (sessionId) activeSessions.set(sessionId, Date.now());
   for (let [id, time] of activeSessions.entries()) if (Date.now() - time > 60000) activeSessions.delete(id);
-  // Count only real users (not bots)
   const realCount = activeSessions.size;
   res.json({ success: true, count: realCount + Math.floor(Math.random() * 30) + 50 });
 });
@@ -179,10 +183,10 @@ app.post('/api/find-match', async (req, res) => {
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
-    return res.json({ success: false, message: "You need to pay ₹12 to chat with females. Please purchase the boost." });
+    return res.json({ success: false, message: "You need to pay ₹12 to chat with real females. AI bots are still free." });
   }
 
-  // If already in a chat, return that partner
+  // If already in a chat
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -191,7 +195,6 @@ app.post('/api/find-match', async (req, res) => {
     } else {
       const partnerId = existingChat.partnerSessionId;
       if (existingChat.isBot) {
-        // Bot partner – return bot info
         return res.json({
           success: true,
           partner: { name: existingChat.botName, gender: existingChat.botGender, region: 'world', id: partnerId, isBot: true }
@@ -206,14 +209,9 @@ app.post('/api/find-match', async (req, res) => {
     }
   }
 
-  // Determine if we have enough real users waiting (at least 2)
+  // Real user matching attempt
   const realUsersWaiting = waitingQueue.filter(id => !activeChats.get(id)?.isBot).length;
-  const activeRealCount = activeSessions.size; // approximate
-
-  // Decide: use real matching or AI bot?
-  // If there are at least 2 real users waiting, try to match them.
   if (realUsersWaiting >= 1) {
-    // Add current user to waiting queue and attempt real match
     const existingIndex = waitingQueue.indexOf(sessionId);
     if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
     waitingQueue.push(sessionId);
@@ -231,8 +229,7 @@ app.post('/api/find-match', async (req, res) => {
     }
   }
 
-  // Not enough real users – create an AI bot
-  // Select bot profile that matches user's preference (if possible)
+  // No real partner – create AI bot
   let candidates = botProfiles;
   if (prefer !== 'any') {
     candidates = botProfiles.filter(b => b.gender === prefer);
@@ -242,13 +239,9 @@ app.post('/api/find-match', async (req, res) => {
   const botId = 'bot_' + nextBotId++;
   const roomId = createRoomId();
   activeChats.set(sessionId, { partnerSessionId: botId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
-  // Create a special "bot" entry to handle AI responses (not stored in activeSessions)
   activeChats.set(botId, { partnerSessionId: sessionId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
   chatMessages.set(roomId, []);
   chatEnded.set(roomId, false);
-  // Store bot conversation history per room for context
-  const botHistory = []; // will be used when generating replies
-  // We'll keep bot history in a separate map
   if (!global.botChatHistory) global.botChatHistory = new Map();
   global.botChatHistory.set(roomId, []);
 
@@ -258,7 +251,6 @@ app.post('/api/find-match', async (req, res) => {
   });
 });
 
-// AI reply generation on message send – if message is sent to a bot, we generate a reply
 app.post('/api/send-message', async (req, res) => {
   const { sessionId, text } = req.body;
   const chat = activeChats.get(sessionId);
@@ -274,20 +266,12 @@ app.post('/api/send-message', async (req, res) => {
     const botId = chat.partnerSessionId;
     const botChat = activeChats.get(botId);
     if (botChat) {
-      // Retrieve conversation history for context
       if (!global.botChatHistory) global.botChatHistory = new Map();
       let history = global.botChatHistory.get(roomId) || [];
-      // Convert history to Gemini format
-      const geminiHistory = history.map(msg => ({
-        role: msg.role,
-        text: msg.text
-      }));
-      // Add user's message as "user" role
+      const geminiHistory = history.map(msg => ({ role: msg.role, text: msg.text }));
       geminiHistory.push({ role: 'user', text });
-      // Get AI reply
       const userGenderVal = userGender.get(sessionId) || 'unknown';
       const botReply = await getAIReply(text, botChat.botName, botChat.botGender, userGenderVal, geminiHistory);
-      // Store bot's reply in history and messages
       history.push({ role: 'user', text });
       history.push({ role: 'model', text: botReply });
       global.botChatHistory.set(roomId, history);
@@ -295,11 +279,9 @@ app.post('/api/send-message', async (req, res) => {
       chatMessages.set(roomId, messages);
     }
   }
-
   res.json({ success: true });
 });
 
-// Other endpoints unchanged (typing, get-messages, skip-chat, end-chat) but need to handle bot partner names
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -357,12 +339,12 @@ app.post('/api/skip-chat', async (req, res) => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
       typingStatus.delete(roomId);
+      if (global.botChatHistory) global.botChatHistory.delete(roomId);
     }, 60000);
   }
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
   waitingQueue.push(sessionId);
-  // Try real match again
   const matched = tryMatchRealUsers();
   if (matched) {
     const newChat = activeChats.get(sessionId);
@@ -375,7 +357,7 @@ app.post('/api/skip-chat', async (req, res) => {
       });
     }
   }
-  // Otherwise, fallback to AI bot immediately
+  // Fallback to bot
   const prefer = userPreferredGender.get(sessionId) || 'any';
   let candidates = botProfiles;
   if (prefer !== 'any') {
@@ -420,14 +402,13 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (simplified, no side panel, full chat) -------------------
-// (Same as previous full-screen version but with minor updates)
+// ------------------- FRONTEND (same as previous, full‑screen, preference dropdown) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>ChatWave · AI + Real Chat</title>
+    <title>ChatWave · Real + AI Chat</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -496,7 +477,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real + AI chat · English & Hinglish · ₹12</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real + AI chat · English/Hinglish · ₹12</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% real female match. Female/Other: always free.</div></div>
@@ -531,7 +512,7 @@ const htmlTemplate = `<!DOCTYPE html>
         </select>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ You'll be matched with real users when available, else with AI chatbots (English/Hinglish).</div>
+        <div class="sys-msg">✨ Real users + AI bots (English/Hinglish). When few real users, AI will talk to you naturally.</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -650,12 +631,10 @@ const htmlTemplate = `<!DOCTYPE html>
         var mainBtn = document.getElementById('mainActionBtn');
         mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
         mainBtn.classList.add('end');
-        // If bot, maybe send greeting after short delay
         if(partner.isBot) {
             setTimeout(() => {
                 if(chatActive && activePartner && activePartner.id === partner.id) {
-                    // Bot's first message will be generated when user sends first message
-                    addSystemMsg("🤖 AI bot is waiting for your message. Say hi in English or Hinglish!");
+                    addSystemMsg("🤖 AI bot is ready. Send a message in English or Hinglish!");
                 }
             }, 1000);
         }
@@ -749,6 +728,7 @@ const htmlTemplate = `<!DOCTYPE html>
         rzp.open();
     }
 
+    // Page transitions
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -773,6 +753,7 @@ const htmlTemplate = `<!DOCTYPE html>
         var termsChecked = acceptCheck.checked;
         if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
     }
+
     acceptCheck.addEventListener('change', validateForm);
 
     goBtn.addEventListener('click', function() {
@@ -786,7 +767,7 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 AI chatbots are here! When few real users are online, you'll talk to friendly AI bots in English/Hinglish.");
+        addSystemMsg("👋 AI bots are here! When few real users are online, you'll talk to friendly AI bots in English/Hinglish.");
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -814,10 +795,5 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🤖 AI chatbots enabled. When few real users, AI speaks English/Hinglish.`);
-  if (GEMINI_API_KEY) {
-    console.log(`🔑 Gemini AI active.`);
-  } else {
-    console.log(`⚠️ GEMINI_API_KEY not set. Using built‑in fallback replies. For better AI, set your Google Gemini API key.`);
-  }
+  console.log(`🤖 AI chatbots enabled (fallback). Real AI requires GEMINI_API_KEY and installed module.`);
 });
