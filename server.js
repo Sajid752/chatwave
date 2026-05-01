@@ -1,7 +1,6 @@
 // ==================== server.js ====================
-// Final: Button layout – Find Partner next to Skip (row on desktop, column on mobile)
-// Male seeking female must pay before matching
-// No bots, real user matching, typing indicator
+// Full-screen chat area, reduced border radius, clean layout
+// Male seeking female forced payment, buttons side by side
 
 const express = require('express');
 const cors = require('cors');
@@ -247,7 +246,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND HTML (buttons side by side) -------------------
+// ------------------- FRONTEND (full-screen chat, reduced border radius) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -268,7 +267,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
         .page { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
-        .terms-container { max-width:680px; width:100%; background:white; border-radius:40px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); overflow:hidden; animation:fadeIn 0.4s ease; }
+        .terms-container { max-width:680px; width:100%; background:white; border-radius:20px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); overflow:hidden; animation:fadeIn 0.4s ease; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
         .terms-header { background:linear-gradient(135deg, #1e293b, #0f172a); padding:32px 28px; text-align:center; color:white; }
         .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; }
@@ -277,7 +276,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
         .rule-title i { color:#2563eb; }
         .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
-        .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:24px; margin:20px 0; border:1px solid #e2e8f0; }
+        .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:16px; margin:20px 0; border:1px solid #e2e8f0; }
         .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; }
         .gender-selector { margin: 20px 0; }
         .gender-selector label { font-weight:600; margin-right:16px; }
@@ -285,17 +284,17 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
         .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
         .gender-option input { display:none; }
-        .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:60px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
+        .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
         .chat-page { min-height:100vh; display:none; }
         .chat-page.active { display:block; }
-        .chat-wrapper { max-width:1300px; margin:0 auto; padding:20px; }
-        .chat-nav { display:flex; justify-content:space-between; align-items:center; background:white; padding:12px 24px; border-radius:80px; margin-bottom:24px; border:1px solid #e2e8f0; }
+        .chat-wrapper { max-width:1400px; margin:0 auto; padding:20px; }
+        .chat-nav { display:flex; justify-content:space-between; align-items:center; background:white; padding:12px 24px; border-radius:40px; margin-bottom:20px; border:1px solid #e2e8f0; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
         .active-users-badge { background:#f1f5f9; padding:8px 18px; border-radius:40px; font-size:0.85rem; font-weight:600; display:flex; align-items:center; gap:8px; }
-        .chat-grid { display:flex; flex-wrap:wrap; gap:24px; }
-        .settings-panel { flex:1.2; min-width:260px; background:white; border-radius:32px; padding:24px; border:1px solid #e2e8f0; height:fit-content; }
-        .chat-panel { flex:3; min-width:280px; background:white; border-radius:32px; display:flex; flex-direction:column; overflow:hidden; border:1px solid #e2e8f0; }
+        .chat-grid { display:flex; flex-wrap:wrap; gap:20px; }
+        .settings-panel { flex:0.8; min-width:220px; background:white; border-radius:20px; padding:20px; border:1px solid #e2e8f0; height:fit-content; }
+        .chat-panel { flex:4; min-width:280px; background:white; border-radius:20px; display:flex; flex-direction:column; overflow:hidden; border:1px solid #e2e8f0; height:calc(100vh - 120px); max-height:calc(100vh - 120px); }
         .filter-group { margin-bottom:20px; }
         .filter-group label { font-weight:600; font-size:0.8rem; color:#334155; display:flex; align-items:center; gap:6px; margin-bottom:8px; }
         select, button { width:100%; padding:10px 14px; border-radius:28px; border:1px solid #e2e8f0; background:#f9fafb; font-family:inherit; font-size:0.85rem; cursor:pointer; }
@@ -303,11 +302,11 @@ const htmlTemplate = `<!DOCTYPE html>
         .btn-danger { background:#fee2e2; border-color:#fecaca; color:#b91c1c; }
         .pay-boost { background:#f59e0b; color:white; border:none; margin-bottom:8px; }
         .pay-boost.hidden { display:none; }
-        .info-badge { background:#f1f5f9; padding:12px; border-radius:20px; font-size:0.7rem; margin:16px 0; }
-        .chat-messages { flex:1; min-height:420px; max-height:55vh; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:10px; background:#ffffff; }
-        .msg { max-width:80%; padding:10px 16px; border-radius:22px; font-size:0.85rem; }
-        .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:6px; }
-        .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:6px; }
+        .info-badge { background:#f1f5f9; padding:12px; border-radius:16px; font-size:0.7rem; margin:16px 0; }
+        .chat-messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:10px; background:#ffffff; }
+        .msg { max-width:80%; padding:10px 16px; border-radius:18px; font-size:0.85rem; }
+        .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; }
+        .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; }
         .sys-msg { text-align:center; font-size:0.7rem; color:#64748b; margin:4px 0; }
         .typing { font-size:0.7rem; padding-left:20px; color:#64748b; font-style:italic; min-height:24px; }
         .input-row { display:flex; gap:10px; padding:16px 20px 20px; background:white; border-top:1px solid #e2e8f0; }
@@ -322,6 +321,8 @@ const htmlTemplate = `<!DOCTYPE html>
             .msg { max-width:90%; }
             .action-buttons { flex-direction:column; }
             .action-buttons button { width:100%; }
+            .chat-panel { height:calc(100vh - 180px); max-height:calc(100vh - 180px); }
+            .settings-panel { min-width:100%; }
         }
     </style>
 </head>
@@ -355,7 +356,10 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page2" class="chat-page">
     <div class="chat-wrapper">
-        <div class="chat-nav"><div class="logo"><i class="fas fa-waveform"></i> ChatWave</div><div class="active-users-badge"><i class="fas fa-users"></i><span>Active:</span><span id="activeUserCount">--</span></div></div>
+        <div class="chat-nav">
+            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
+            <div class="active-users-badge"><i class="fas fa-users"></i><span>Active:</span><span id="activeUserCount">--</span></div>
+        </div>
         <div class="chat-grid">
             <div class="settings-panel">
                 <div class="filter-group">
@@ -372,7 +376,10 @@ const htmlTemplate = `<!DOCTYPE html>
                 <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> Loading...</div>
             </div>
             <div class="chat-panel">
-                <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;"><span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span><span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span></div>
+                <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;">
+                    <span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span>
+                    <span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span>
+                </div>
                 <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Choose your preference and click "Find Partner".</div></div>
                 <div class="typing" id="typingIndicator"></div>
                 <div class="input-row">
@@ -686,6 +693,5 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🔘 Buttons: Find Partner & Skip are side by side (stack on mobile)`);
-  console.log(`💳 Male seeking female forced payment before match`);
+  console.log(`🖥️ Full‑screen chat area, reduced border radius, compact controls`);
 });
