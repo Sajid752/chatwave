@@ -1,6 +1,7 @@
 // ==================== server.js ====================
-// Clean UI – Gender selection, dynamic payment visibility
-// No syntax errors – inner backticks escaped
+// Final: Button toggle (Find Partner <-> End Chat)
+// Male seeking female must pay before matching
+// No bots, real user matching, typing indicator, skip
 
 const express = require('express');
 const cors = require('cors');
@@ -93,6 +94,13 @@ app.post('/api/find-match', (req, res) => {
   const { prefer, sessionId, userGender: gender } = req.body;
   userPreferredGender.set(sessionId, prefer);
   if (gender) userGender.set(sessionId, gender);
+
+  // Block male seeking female without premium
+  const myGender = userGender.get(sessionId);
+  const hasPrem = isPremiumActive(sessionId);
+  if (myGender === 'male' && prefer === 'female' && !hasPrem) {
+    return res.json({ success: false, message: "You need to pay ₹12 to chat with females. Please purchase the boost." });
+  }
 
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
@@ -240,7 +248,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND HTML (fixed backticks) -------------------
+// ------------------- FRONTEND HTML (fixed backticks, button toggle) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -310,6 +318,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .status-chip { background:#eef2ff; padding:4px 12px; border-radius:30px; font-size:0.7rem; display:inline-flex; align-items:center; gap:6px; }
         .dot { width:8px; height:8px; border-radius:8px; display:inline-block; }
+        .main-action-btn { transition:0.2s; margin-bottom:8px; }
         @media (max-width:700px) { .msg { max-width:90%; } .action-buttons { flex-direction:column; } }
     </style>
 </head>
@@ -322,21 +331,15 @@ const htmlTemplate = `<!DOCTYPE html>
         <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real chat · Real friends · Real payments</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance without waiting. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance. Female/Other: always free.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
             
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
                 <div class="gender-options">
-                    <label class="gender-option" data-gender="male">
-                        <input type="radio" name="userGender" value="male"> 👨 Male
-                    </label>
-                    <label class="gender-option" data-gender="female">
-                        <input type="radio" name="userGender" value="female"> 👩 Female
-                    </label>
-                    <label class="gender-option" data-gender="other">
-                        <input type="radio" name="userGender" value="other"> 🌈 Other
-                    </label>
+                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
+                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
+                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
                 </div>
                 <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
             </div>
@@ -361,9 +364,9 @@ const htmlTemplate = `<!DOCTYPE html>
                         <option value="other">🌈 Other</option>
                     </select>
                 </div>
-                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>When you both click "Find Partner", you'll chat together.</div>
+                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>Male seeking female must pay ₹12 to match.</div>
                 <button id="payBoostBtn" class="pay-boost hidden"><i class="fas fa-qrcode"></i> Pay ₹12 (Boost)</button>
-                <button id="findChatBtn" class="btn-primary"><i class="fas fa-random"></i> Find Partner</button>
+                <button id="mainActionBtn" class="btn-primary main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
                 <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> Loading...</div>
             </div>
             <div class="chat-panel">
@@ -376,7 +379,6 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
                 <div class="action-buttons">
                     <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
-                    <button id="endChatPageBtn" class="btn-danger"><i class="fas fa-stop"></i> End Chat</button>
                 </div>
             </div>
         </div>
@@ -396,29 +398,37 @@ const htmlTemplate = `<!DOCTYPE html>
     let typingTimeout = null;
     let userGender = null;
 
-    function showToast(msg, type) { const c=document.getElementById('toastContainer'); const t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(function(){t.remove();},4000); }
+    function showToast(msg, type) { var c=document.getElementById('toastContainer'); var t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(function(){t.remove();},4000); }
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
 
     async function apiCall(endpoint, method, data) {
-        const opts = { method: method, headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId } };
+        var opts = { method: method, headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId } };
         if(data) opts.body = JSON.stringify(data);
-        const res = await fetch(API_BASE+endpoint, opts);
+        var res = await fetch(API_BASE+endpoint, opts);
         return res.json();
     }
 
     async function checkPremium() { 
-        const res = await apiCall('/api/check-premium', 'POST', { sessionId: sessionId }); 
+        var res = await apiCall('/api/check-premium', 'POST', { sessionId: sessionId }); 
         hasPremium = res.hasPremium; 
         premiumExpiry = res.expiry; 
         updatePaymentUI();
     }
-    async function getActiveUsers() { const res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
+    async function getActiveUsers() { var res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
     async function findMatch() {
-        if(chatActive) { addSystemMsg("End current chat first."); return; }
+        if(chatActive) { endChat(); return; }
+        var prefer = document.getElementById('chatPrefer').value;
+        // If male seeking female and no premium, block and prompt payment
+        if(userGender === 'male' && prefer === 'female' && !hasPremium) {
+            showToast("You need to pay ₹12 to chat with females. Please purchase the boost.", "warning");
+            // Open payment modal automatically
+            openRazorpay();
+            return;
+        }
         showLoading(true);
-        const res = await apiCall('/api/find-match', 'POST', {
-            prefer: document.getElementById('chatPrefer').value,
+        var res = await apiCall('/api/find-match', 'POST', {
+            prefer: prefer,
             sessionId: sessionId,
             userGender: userGender
         });
@@ -431,7 +441,7 @@ const htmlTemplate = `<!DOCTYPE html>
     async function skipChat() {
         if(!chatActive) { addSystemMsg("No active chat to skip."); return; }
         showLoading(true);
-        const res = await apiCall('/api/skip-chat', 'POST', { sessionId: sessionId });
+        var res = await apiCall('/api/skip-chat', 'POST', { sessionId: sessionId });
         if(msgInterval) clearInterval(msgInterval);
         if(typingInterval) clearInterval(typingInterval);
         msgInterval = null;
@@ -480,6 +490,11 @@ const htmlTemplate = `<!DOCTYPE html>
         input.value = '';
         input.disabled = false;
         input.focus();
+        // Change main button to "End Chat"
+        var mainBtn = document.getElementById('mainActionBtn');
+        mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
+        mainBtn.classList.remove('btn-primary');
+        mainBtn.classList.add('btn-danger');
     }
 
     async function pollMessages() {
@@ -537,7 +552,22 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function updateChatUI() {
         var pSpan=document.getElementById('partnerNameLabel'); var cSpan=document.getElementById('connBadge'); var sendBtn=document.getElementById('sendChatMsgBtn'); var inp=document.getElementById('chatMsgInput');
-        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> Connected to a real person'; cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
+        var mainBtn = document.getElementById('mainActionBtn');
+        if(chatActive && activePartner){
+            pSpan.innerHTML='<i class="fas fa-user-check"></i> Connected to a real person';
+            cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected';
+            sendBtn.disabled=false; inp.disabled=false;
+            mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
+            mainBtn.classList.remove('btn-primary');
+            mainBtn.classList.add('btn-danger');
+        } else {
+            pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected';
+            cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline';
+            sendBtn.disabled=true; inp.disabled=true;
+            mainBtn.innerHTML = '<i class="fas fa-random"></i> Find Partner';
+            mainBtn.classList.remove('btn-danger');
+            mainBtn.classList.add('btn-primary');
+        }
     }
 
     function updatePaymentUI() {
@@ -557,7 +587,7 @@ const htmlTemplate = `<!DOCTYPE html>
                 var left = Math.floor((premiumExpiry - Date.now())/60000);
                 payDiv.innerHTML = '<i class="fas fa-crown"></i> PREMIUM ('+left+'min left) · 100% female match';
             } else {
-                payDiv.innerHTML = '<i class="fas fa-clock"></i> No premium · Female match chance: 15% <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
+                payDiv.innerHTML = '<i class="fas fa-clock"></i> No premium · Female match requires payment <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
                 var payNow = document.getElementById('payNowBtn');
                 if(payNow) payNow.onclick = openRazorpay;
             }
@@ -608,20 +638,13 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function validateForm() {
         var termsChecked = acceptCheck.checked;
-        if(selectedGender && termsChecked) {
-            goBtn.disabled = false;
-        } else {
-            goBtn.disabled = true;
-        }
+        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
     }
 
     acceptCheck.addEventListener('change', validateForm);
 
     goBtn.addEventListener('click', function() {
-        if(!selectedGender) {
-            genderError.innerText = 'Please select your gender';
-            return;
-        }
+        if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
         if(!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
@@ -631,13 +654,12 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Real user matching only! Choose your preference and click 'Find Partner'. Female/Other users see no payment options.");
+        addSystemMsg("👋 Real user matching only! Male users: to chat with females, you must pay ₹12 first.");
         updatePaymentUI();
         document.getElementById('chatPrefer').addEventListener('change', updatePaymentUI);
     });
 
-    document.getElementById('findChatBtn').onclick = findMatch;
-    document.getElementById('endChatPageBtn').onclick = endChat;
+    document.getElementById('mainActionBtn').onclick = findMatch;
     document.getElementById('skipChatBtn').onclick = skipChat;
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
     document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
@@ -646,19 +668,11 @@ const htmlTemplate = `<!DOCTYPE html>
     msgInputChat.addEventListener('input', function() {
         if(!chatActive) return;
         var currentlyTyping = msgInputChat.value.length > 0;
-        if(currentlyTyping && !isTyping) {
-            isTyping = true;
-            sendTyping(true);
-        } else if(!currentlyTyping && isTyping) {
-            isTyping = false;
-            sendTyping(false);
-        }
+        if(currentlyTyping && !isTyping) { isTyping = true; sendTyping(true); }
+        else if(!currentlyTyping && isTyping) { isTyping = false; sendTyping(false); }
         if(typingTimeout) clearTimeout(typingTimeout);
         typingTimeout = setTimeout(function() {
-            if(isTyping && chatActive) {
-                isTyping = false;
-                sendTyping(false);
-            }
+            if(isTyping && chatActive) { isTyping = false; sendTyping(false); }
         }, 2000);
     });
     
@@ -672,6 +686,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`👤 Gender selection on first page, no captcha`);
-  console.log(`💳 Female/Other: payment hidden; Male: payment only when seeking female`);
+  console.log(`🔁 Button toggles: Find Partner ↔ End Chat`);
+  console.log(`💳 Male seeking female must pay before matching`);
 });
