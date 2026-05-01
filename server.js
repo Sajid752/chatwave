@@ -1,7 +1,7 @@
 // ==================== server.js ====================
-// Final: Button toggle (Find Partner <-> End Chat)
+// Final: Button layout – Find Partner next to Skip (row on desktop, column on mobile)
 // Male seeking female must pay before matching
-// No bots, real user matching, typing indicator, skip
+// No bots, real user matching, typing indicator
 
 const express = require('express');
 const cors = require('cors');
@@ -95,7 +95,6 @@ app.post('/api/find-match', (req, res) => {
   userPreferredGender.set(sessionId, prefer);
   if (gender) userGender.set(sessionId, gender);
 
-  // Block male seeking female without premium
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
@@ -248,7 +247,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND HTML (fixed backticks, button toggle) -------------------
+// ------------------- FRONTEND HTML (buttons side by side) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -315,11 +314,15 @@ const htmlTemplate = `<!DOCTYPE html>
         .input-row input { flex:1; padding:12px 18px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; }
         .send-btn { background:#2563eb; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; }
         .action-buttons { display:flex; gap:10px; padding:0 20px 16px 20px; }
+        .action-buttons button { flex:1; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .status-chip { background:#eef2ff; padding:4px 12px; border-radius:30px; font-size:0.7rem; display:inline-flex; align-items:center; gap:6px; }
         .dot { width:8px; height:8px; border-radius:8px; display:inline-block; }
-        .main-action-btn { transition:0.2s; margin-bottom:8px; }
-        @media (max-width:700px) { .msg { max-width:90%; } .action-buttons { flex-direction:column; } }
+        @media (max-width:700px) {
+            .msg { max-width:90%; }
+            .action-buttons { flex-direction:column; }
+            .action-buttons button { width:100%; }
+        }
     </style>
 </head>
 <body>
@@ -366,7 +369,6 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
                 <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>Male seeking female must pay ₹12 to match.</div>
                 <button id="payBoostBtn" class="pay-boost hidden"><i class="fas fa-qrcode"></i> Pay ₹12 (Boost)</button>
-                <button id="mainActionBtn" class="btn-primary main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
                 <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> Loading...</div>
             </div>
             <div class="chat-panel">
@@ -378,6 +380,7 @@ const htmlTemplate = `<!DOCTYPE html>
                     <button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button>
                 </div>
                 <div class="action-buttons">
+                    <button id="mainActionBtn" class="btn-primary main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
                     <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
                 </div>
             </div>
@@ -419,10 +422,8 @@ const htmlTemplate = `<!DOCTYPE html>
     async function findMatch() {
         if(chatActive) { endChat(); return; }
         var prefer = document.getElementById('chatPrefer').value;
-        // If male seeking female and no premium, block and prompt payment
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
             showToast("You need to pay ₹12 to chat with females. Please purchase the boost.", "warning");
-            // Open payment modal automatically
             openRazorpay();
             return;
         }
@@ -490,7 +491,6 @@ const htmlTemplate = `<!DOCTYPE html>
         input.value = '';
         input.disabled = false;
         input.focus();
-        // Change main button to "End Chat"
         var mainBtn = document.getElementById('mainActionBtn');
         mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
         mainBtn.classList.remove('btn-primary');
@@ -686,6 +686,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🔁 Button toggles: Find Partner ↔ End Chat`);
-  console.log(`💳 Male seeking female must pay before matching`);
+  console.log(`🔘 Buttons: Find Partner & Skip are side by side (stack on mobile)`);
+  console.log(`💳 Male seeking female forced payment before match`);
 });
