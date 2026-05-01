@@ -1,6 +1,7 @@
 // ==================== server.js ====================
-// REAL USER MATCHING ONLY – with partner left notification
-// Works on Express v5 (Render) with explicit root route
+// Clean UI – No region, no my gender
+// Only "Prefer to chat with"
+// Features: real user matching, typing indicator, skip button, partner left notification
 
 const express = require('express');
 const cors = require('cors');
@@ -21,10 +22,11 @@ app.use(express.json());
 const activeSessions = new Map();          // sessionId -> lastSeen
 const userPremiums = new Map();            // sessionId -> expiry timestamp
 const waitingQueue = [];                   // sessionIds waiting for a real partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot (always false) }
+const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
 const chatMessages = new Map();            // roomId -> array of messages
-const chatEnded = new Map();               // roomId -> boolean (true if chat ended by either party)
-const userFilters = new Map();             // sessionId -> { myGender, region, prefer }
+const chatEnded = new Map();               // roomId -> boolean
+const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
+const typingStatus = new Map();            // roomId -> { userId, timestamp }
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -35,16 +37,17 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
-// Match two real users from the waiting queue
+// Match two real users from the waiting queue, respecting gender preference
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
+  // Simple FIFO matching – could be improved with preference logic
   const userA = waitingQueue.shift();
   const userB = waitingQueue.shift();
   if (!userA || !userB) return false;
 
   const roomId = createRoomId();
-  activeChats.set(userA, { partnerSessionId: userB, roomId, isBot: false });
-  activeChats.set(userB, { partnerSessionId: userA, roomId, isBot: false });
+  activeChats.set(userA, { partnerSessionId: userB, roomId });
+  activeChats.set(userB, { partnerSessionId: userA, roomId });
   chatMessages.set(roomId, []);
   chatEnded.set(roomId, false);
   return true;
@@ -89,32 +92,29 @@ app.get('/api/active-users', (req, res) => {
   res.json({ success: true, count: activeSessions.size + Math.floor(Math.random() * 100) + 50 });
 });
 
+// Find match – now only uses preferredGender (no region/myGender)
 app.post('/api/find-match', (req, res) => {
-  const { myGender, region, prefer, sessionId } = req.body;
+  const { prefer, sessionId } = req.body;
   const hasPremium = isPremiumActive(sessionId);
-
-  userFilters.set(sessionId, { myGender, region, prefer });
+  userPreferredGender.set(sessionId, prefer);
 
   // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
-    // Check if chat ended for this room
     const roomEnded = chatEnded.get(existingChat.roomId);
     if (roomEnded) {
-      // Clean up stale chat
       activeChats.delete(sessionId);
-      // fall through to find new match
     } else {
       const partnerId = existingChat.partnerSessionId;
-      const partnerFilters = userFilters.get(partnerId) || {};
+      const partnerPref = userPreferredGender.get(partnerId) || 'any';
       return res.json({
         success: true,
-        partner: { name: 'Real user', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerId, isBot: false }
+        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
       });
     }
   }
 
-  // Remove user from waiting queue if already there (cleanup)
+  // Remove from waiting queue if already there
   const existingIndex = waitingQueue.indexOf(sessionId);
   if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
 
@@ -125,16 +125,43 @@ app.post('/api/find-match', (req, res) => {
     const chat = activeChats.get(sessionId);
     if (chat && chat.partnerSessionId) {
       const partnerId = chat.partnerSessionId;
-      const partnerFilters = userFilters.get(partnerId) || {};
+      const partnerPref = userPreferredGender.get(partnerId) || 'any';
       return res.json({
         success: true,
-        partner: { name: 'Real user', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerId, isBot: false }
+        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
       });
     }
   }
 
-  // No real partner available – tell user to try again
   return res.json({ success: false, message: "No real users available. Please try again later." });
+});
+
+// Typing indicator endpoint
+app.post('/api/typing', (req, res) => {
+  const { sessionId, isTyping } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.json({ success: false });
+  const roomId = chat.roomId;
+  if (isTyping) {
+    typingStatus.set(roomId, { userId: sessionId, timestamp: Date.now() });
+  } else {
+    const current = typingStatus.get(roomId);
+    if (current && current.userId === sessionId) typingStatus.delete(roomId);
+  }
+  res.json({ success: true });
+});
+
+// Get typing status for the other user
+app.post('/api/get-typing', (req, res) => {
+  const { sessionId } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.json({ isTyping: false });
+  const roomId = chat.roomId;
+  const typing = typingStatus.get(roomId);
+  if (typing && typing.userId !== sessionId && (Date.now() - typing.timestamp) < 2500) {
+    return res.json({ isTyping: true });
+  }
+  res.json({ isTyping: false });
 });
 
 app.post('/api/send-message', (req, res) => {
@@ -146,6 +173,8 @@ app.post('/api/send-message', (req, res) => {
   const messages = chatMessages.get(roomId) || [];
   messages.push({ from: sessionId, text, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
+  // Clear typing indicator for this user after sending
+  typingStatus.delete(roomId);
   res.json({ success: true });
 });
 
@@ -156,7 +185,6 @@ app.post('/api/get-messages', (req, res) => {
   const roomId = chat.roomId;
   const ended = chatEnded.get(roomId) || false;
   if (ended) {
-    // Clean up for this user
     activeChats.delete(sessionId);
     return res.json({ success: true, messages: [], chatEnded: true });
   }
@@ -166,23 +194,58 @@ app.post('/api/get-messages', (req, res) => {
   res.json({ success: true, messages: filtered, chatEnded: false });
 });
 
-app.post('/api/end-chat', (req, res) => {
+app.post('/api/skip-chat', async (req, res) => {
   const { sessionId } = req.body;
   const chat = activeChats.get(sessionId);
   if (chat) {
     const roomId = chat.roomId;
-    // Mark chat as ended so partner will be notified
     chatEnded.set(roomId, true);
-    // Remove partner's chat entry (so they won't be stuck in limbo)
     if (chat.partnerSessionId) {
       const partnerChat = activeChats.get(chat.partnerSessionId);
       if (partnerChat) activeChats.delete(chat.partnerSessionId);
     }
     activeChats.delete(sessionId);
-    // Keep messages for a while (optional cleanup)
     setTimeout(() => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
+      typingStatus.delete(roomId);
+    }, 60000);
+  }
+  // Remove from waiting queue if present
+  const idx = waitingQueue.indexOf(sessionId);
+  if (idx !== -1) waitingQueue.splice(idx, 1);
+  // Immediately requeue and try to find new match
+  waitingQueue.push(sessionId);
+  const matched = tryMatchRealUsers();
+  if (matched) {
+    const newChat = activeChats.get(sessionId);
+    if (newChat && newChat.partnerSessionId) {
+      const partnerId = newChat.partnerSessionId;
+      const partnerPref = userPreferredGender.get(partnerId) || 'any';
+      return res.json({
+        success: true,
+        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+      });
+    }
+  }
+  res.json({ success: false, message: "No new partner right now. Try again." });
+});
+
+app.post('/api/end-chat', (req, res) => {
+  const { sessionId } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (chat) {
+    const roomId = chat.roomId;
+    chatEnded.set(roomId, true);
+    if (chat.partnerSessionId) {
+      const partnerChat = activeChats.get(chat.partnerSessionId);
+      if (partnerChat) activeChats.delete(chat.partnerSessionId);
+    }
+    activeChats.delete(sessionId);
+    setTimeout(() => {
+      chatMessages.delete(roomId);
+      chatEnded.delete(roomId);
+      typingStatus.delete(roomId);
     }, 60000);
   }
   const idx = waitingQueue.indexOf(sessionId);
@@ -190,12 +253,12 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (HTML embedded) -------------------
+// ------------------- FRONTEND (clean UI) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>ChatWave · Real Friends Chat</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
@@ -205,7 +268,7 @@ const htmlTemplate = `<!DOCTYPE html>
         body { font-family: 'Inter', sans-serif; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); min-height: 100vh; }
         .toast-container { position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:10px; }
         .toast { background:white; border-radius:12px; padding:12px 20px; box-shadow:0 10px 25px rgba(0,0,0,0.1); display:flex; align-items:center; gap:12px; border-left:4px solid #2563eb; }
-        .toast.success { border-left-color: #10b981; }
+        .toast.success { border-left-color:#10b981; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
@@ -252,9 +315,11 @@ const htmlTemplate = `<!DOCTYPE html>
         .input-row { display:flex; gap:10px; padding:16px 20px 20px; background:white; border-top:1px solid #e2e8f0; }
         .input-row input { flex:1; padding:12px 18px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; }
         .send-btn { background:#2563eb; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; }
+        .action-buttons { display:flex; gap:10px; margin-top:8px; }
+        .skip-btn { background:#f59e0b; color:white; border:none; }
         .status-chip { background:#eef2ff; padding:4px 12px; border-radius:30px; font-size:0.7rem; display:inline-flex; align-items:center; gap:6px; }
         .dot { width:8px; height:8px; border-radius:8px; display:inline-block; }
-        @media (max-width:700px) { .msg { max-width:90%; } }
+        @media (max-width:700px) { .msg { max-width:90%; } .action-buttons { flex-direction:column; } }
     </style>
 </head>
 <body>
@@ -281,20 +346,32 @@ const htmlTemplate = `<!DOCTYPE html>
         <div class="chat-nav"><div class="logo"><i class="fas fa-waveform"></i> ChatWave</div><div class="active-users-badge"><i class="fas fa-users"></i><span>Active:</span><span id="activeUserCount">--</span></div></div>
         <div class="chat-grid">
             <div class="settings-panel">
-                <div class="filter-group"><label><i class="fas fa-user"></i> My gender</label><select id="chatMyGender"><option value="male">👨 Male</option><option value="female">👩 Female</option><option value="other">🌈 Other</option></select></div>
-                <div class="filter-group"><label><i class="fas fa-globe"></i> Region</label><select id="chatRegion"><option value="global">🌍 Global</option><option value="asia">🌏 Asia</option><option value="europe">🇪🇺 Europe</option><option value="americas">🌎 Americas</option></select></div>
-                <div class="filter-group"><label><i class="fas fa-heart"></i> Prefer to chat with</label><select id="chatPrefer"><option value="any">✨ Anyone</option><option value="female">👩 Female</option><option value="male">👨 Male</option><option value="other">🌈 Other</option></select></div>
+                <div class="filter-group">
+                    <label><i class="fas fa-heart"></i> I want to chat with</label>
+                    <select id="chatPrefer">
+                        <option value="any">✨ Anyone</option>
+                        <option value="female">👩 Female</option>
+                        <option value="male">👨 Male</option>
+                        <option value="other">🌈 Other</option>
+                    </select>
+                </div>
                 <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>No bots – when two people both click "Find Partner", they'll chat together.</div>
-                <button id="payBoostBtn" class="pay-boost"><i class="fas fa-qrcode"></i> Pay ₹12 (Real UPI)</button>
+                <button id="payBoostBtn" class="pay-boost"><i class="fas fa-qrcode"></i> Pay ₹12 (Boost)</button>
                 <button id="findChatBtn" class="btn-primary"><i class="fas fa-random"></i> Find Partner</button>
-                <button id="endChatPageBtn" class="btn-danger" style="margin-top:8px;"><i class="fas fa-stop"></i> End Chat</button>
                 <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> No premium</div>
             </div>
             <div class="chat-panel">
                 <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;"><span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span><span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span></div>
-                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching only! Invite a friend – when you both click "Find Partner", you'll chat together. If your partner leaves, you'll be notified.</div></div>
+                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching only! Invite a friend – when you both click "Find Partner", you'll chat together.</div></div>
                 <div class="typing" id="typingIndicator"></div>
-                <div class="input-row"><input type="text" id="chatMsgInput" placeholder="Type a message..."><button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button></div>
+                <div class="input-row">
+                    <input type="text" id="chatMsgInput" placeholder="Type a message...">
+                    <button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button>
+                </div>
+                <div class="action-buttons" style="padding:0 20px 16px 20px;">
+                    <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
+                    <button id="endChatPageBtn" class="btn-danger"><i class="fas fa-stop"></i> End Chat</button>
+                </div>
             </div>
         </div>
     </div>
@@ -308,6 +385,9 @@ const htmlTemplate = `<!DOCTYPE html>
     let activePolling = null;
     let lastMsgTimestamp = 0;
     let msgInterval = null;
+    let typingInterval = null;
+    let isTyping = false;
+    let typingTimeout = null;
 
     function showToast(msg, type='info') { const c=document.getElementById('toastContainer'); const t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(()=>t.remove(),4000); }
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
@@ -326,8 +406,6 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) { addSystemMsg("End current chat first."); return; }
         showLoading(true);
         const res = await apiCall('/api/find-match', 'POST', {
-            myGender: document.getElementById('chatMyGender').value,
-            region: document.getElementById('chatRegion').value,
             prefer: document.getElementById('chatPrefer').value,
             sessionId
         });
@@ -337,23 +415,66 @@ const htmlTemplate = `<!DOCTYPE html>
         else addSystemMsg("Could not find a partner. Try again.");
     }
 
+    async function skipChat() {
+        if(!chatActive) { addSystemMsg("No active chat to skip."); return; }
+        showLoading(true);
+        const res = await apiCall('/api/skip-chat', 'POST', { sessionId });
+        // End current chat UI
+        if(msgInterval) clearInterval(msgInterval);
+        if(typingInterval) clearInterval(typingInterval);
+        msgInterval = null;
+        typingInterval = null;
+        chatActive = false;
+        activePartner = null;
+        clearChatMsgs(true);
+        updateUI();
+        if(res.success && res.partner) {
+            startChat(res.partner);
+        } else if(res.message) {
+            addSystemMsg(res.message);
+        }
+        showLoading(false);
+    }
+
+    async function endChat() {
+        if(chatActive) {
+            await apiCall('/api/end-chat', 'POST', { sessionId });
+            if(msgInterval) clearInterval(msgInterval);
+            if(typingInterval) clearInterval(typingInterval);
+            msgInterval = null;
+            typingInterval = null;
+            chatActive = false;
+            activePartner = null;
+            clearChatMsgs(true);
+            updateUI();
+        } else {
+            addSystemMsg("No active chat.");
+        }
+    }
+
     function startChat(partner) {
         if(chatActive) endChat();
         activePartner = partner;
         chatActive = true;
         clearChatMsgs();
-        addSystemMsg('✨ Connected with ' + partner.name + ' (real user) from ' + partner.region);
+        addSystemMsg('✨ Connected with a real person! Say hello.');
         updateUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
         msgInterval = setInterval(pollMessages, 1500);
+        if(typingInterval) clearInterval(typingInterval);
+        typingInterval = setInterval(pollTyping, 2000);
+        // Reset typing indicator on input
+        const input = document.getElementById('chatMsgInput');
+        input.value = '';
+        input.disabled = false;
+        input.focus();
     }
 
     async function pollMessages() {
         if(!chatActive) return;
         const res = await apiCall('/api/get-messages', 'POST', { sessionId, lastTimestamp: lastMsgTimestamp });
         if(res.chatEnded) {
-            // Partner ended chat
             showToast("Your partner has left the chat.", "warning");
             endChat();
             addSystemMsg("Chat ended because your partner disconnected.");
@@ -367,16 +488,19 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    async function endChat() {
-        if(chatActive) {
-            await apiCall('/api/end-chat', 'POST', { sessionId });
-            if(msgInterval) clearInterval(msgInterval);
-            msgInterval = null;
-            chatActive = false;
-            activePartner = null;
-            clearChatMsgs(true);
-            updateUI();
+    async function pollTyping() {
+        if(!chatActive) return;
+        const res = await apiCall('/api/get-typing', 'POST', { sessionId });
+        if(res.isTyping) {
+            document.getElementById('typingIndicator').innerText = 'Stranger is typing...';
+        } else {
+            document.getElementById('typingIndicator').innerText = '';
         }
+    }
+
+    async function sendTyping(typing) {
+        if(!chatActive) return;
+        await apiCall('/api/typing', 'POST', { sessionId, isTyping: typing });
     }
 
     async function sendMessage() {
@@ -386,6 +510,9 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!text) return;
         addBubble(text, 'out');
         input.value = '';
+        // Stop typing indicator
+        if(typingTimeout) clearTimeout(typingTimeout);
+        await sendTyping(false);
         const res = await apiCall('/api/send-message', 'POST', { sessionId, text });
         if(!res.success && res.message === 'Chat already ended') {
             showToast("Chat already ended.", "error");
@@ -399,8 +526,8 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function updateUI() {
         const pSpan=document.getElementById('partnerNameLabel'); const cSpan=document.getElementById('connBadge'); const sendBtn=document.getElementById('sendChatMsgBtn'); const inp=document.getElementById('chatMsgInput'); const payDiv=document.getElementById('paymentStatusChat');
-        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> '+activePartner.name+' (real)'; cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
-        const myGender=document.getElementById('chatMyGender').value;
+        if(chatActive && activePartner){ pSpan.innerHTML='<i class="fas fa-user-check"></i> Connected to a real person'; cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected'; sendBtn.disabled=false; inp.disabled=false; } else { pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected'; cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline'; sendBtn.disabled=true; inp.disabled=true; }
+        const myGender = localStorage.getItem('userGender') || 'male'; // default for payment message
         if(myGender==='male' && hasPremium && premiumExpiry && Date.now()<premiumExpiry){ const left=Math.floor((premiumExpiry-Date.now())/60000); payDiv.innerHTML='<i class="fas fa-crown"></i> PREMIUM ('+left+'min left) · 100% female match'; }
         else if(myGender==='male') payDiv.innerHTML='<i class="fas fa-clock"></i> No premium · Female chance: 15% <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
         else payDiv.innerHTML='<i class="fas fa-unlock"></i> Free access';
@@ -408,7 +535,8 @@ const htmlTemplate = `<!DOCTYPE html>
     }
 
     async function openRazorpay() {
-        if(document.getElementById('chatMyGender').value!=='male'){ showToast("Only male users can buy boost.",'warning'); return; }
+        const myGender = 'male'; // we assume only male clicks, but we can ask
+        if(myGender!=='male'){ showToast("Only male users can buy boost.",'warning'); return; }
         if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ showToast("Premium already active.",'info'); return; }
         showLoading(true);
         const res = await apiCall('/api/create-order', 'POST', { amount: 12 });
@@ -425,33 +553,52 @@ const htmlTemplate = `<!DOCTYPE html>
         rzp.open();
     }
 
+    // Attach typing detection
+    const msgInput = document.getElementById('chatMsgInput');
+    msgInput.addEventListener('input', () => {
+        if(!chatActive) return;
+        const isCurrentlyTyping = msgInput.value.length > 0;
+        if(isCurrentlyTyping && !isTyping) {
+            isTyping = true;
+            sendTyping(true);
+        } else if(!isCurrentlyTyping && isTyping) {
+            isTyping = false;
+            sendTyping(false);
+        }
+        if(typingTimeout) clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+            if(isTyping && chatActive) {
+                isTyping = false;
+                sendTyping(false);
+            }
+        }, 2000);
+    });
+
     // Page transitions
     const page1=document.getElementById('page1'), page2=document.getElementById('page2');
     const acceptCheck=document.getElementById('acceptTerms'), verifyBtn=document.getElementById('verifyRobotBtn'), goBtn=document.getElementById('goToChatBtn');
     let verified=false;
     verifyBtn.onclick=()=>{ verified=true; verifyBtn.innerHTML='<i class="fas fa-check-circle"></i> Verified ✓'; verifyBtn.classList.add('verified'); document.getElementById('verifyStatus').innerHTML='<span style="color:#10b981;">✓ Verified</span>'; goBtn.disabled=!(acceptCheck.checked && verified); };
     acceptCheck.onchange=()=>{ goBtn.disabled=!(acceptCheck.checked && verified); };
-    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching only! Invite a friend – when you both click 'Find Partner', you'll chat together. If partner leaves, you'll be notified."); };
+    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching only! Invite a friend – when you both click 'Find Partner', you'll chat together. Use Skip to find a new partner."); };
     document.getElementById('findChatBtn').onclick=findMatch;
     document.getElementById('endChatPageBtn').onclick=endChat;
+    document.getElementById('skipChatBtn').onclick=skipChat;
     document.getElementById('sendChatMsgBtn').onclick=sendMessage;
     document.getElementById('chatMsgInput').onkeypress=(e)=>{ if(e.key==='Enter') sendMessage(); };
     document.getElementById('payBoostBtn').onclick=openRazorpay;
-    document.getElementById('chatMyGender').onchange=updateUI;
-    document.getElementById('chatPrefer').onchange=updateUI;
+    document.getElementById('chatPrefer').onchange=()=>{ if(!chatActive) updateUI(); };
     updateUI();
 </script>
 </body>
 </html>`;
 
-// Serve the frontend – explicit root route and catch-all for client-side routing
+// Serve the frontend
 app.get('/', (req, res) => res.send(htmlTemplate));
 app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
-// ------------------- START SERVER -------------------
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`👥 Real user matching only (no bots) — friends will be paired together!`);
-  console.log(`🔔 Partner left notification enabled`);
+  console.log(`👥 Real user matching only – Skip button & typing indicator added`);
   console.log(`🔑 Razorpay: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys' : 'active'}`);
 });
