@@ -1,5 +1,5 @@
 // ==================== server.js ====================
-// REAL USER MATCHING ONLY – NO BOTS
+// REAL USER MATCHING ONLY – with partner left notification
 // Works on Express v5 (Render) with explicit root route
 
 const express = require('express');
@@ -21,8 +21,9 @@ app.use(express.json());
 const activeSessions = new Map();          // sessionId -> lastSeen
 const userPremiums = new Map();            // sessionId -> expiry timestamp
 const waitingQueue = [];                   // sessionIds waiting for a real partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot (always false now) }
+const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId, isBot (always false) }
 const chatMessages = new Map();            // roomId -> array of messages
+const chatEnded = new Map();               // roomId -> boolean (true if chat ended by either party)
 const userFilters = new Map();             // sessionId -> { myGender, region, prefer }
 
 function isPremiumActive(sessionId) {
@@ -45,6 +46,7 @@ function tryMatchRealUsers() {
   activeChats.set(userA, { partnerSessionId: userB, roomId, isBot: false });
   activeChats.set(userB, { partnerSessionId: userA, roomId, isBot: false });
   chatMessages.set(roomId, []);
+  chatEnded.set(roomId, false);
   return true;
 }
 
@@ -96,12 +98,20 @@ app.post('/api/find-match', (req, res) => {
   // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
-    const partnerId = existingChat.partnerSessionId;
-    const partnerFilters = userFilters.get(partnerId) || {};
-    return res.json({
-      success: true,
-      partner: { name: 'Real user', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerId, isBot: false }
-    });
+    // Check if chat ended for this room
+    const roomEnded = chatEnded.get(existingChat.roomId);
+    if (roomEnded) {
+      // Clean up stale chat
+      activeChats.delete(sessionId);
+      // fall through to find new match
+    } else {
+      const partnerId = existingChat.partnerSessionId;
+      const partnerFilters = userFilters.get(partnerId) || {};
+      return res.json({
+        success: true,
+        partner: { name: 'Real user', gender: partnerFilters.myGender || 'unknown', region: partnerFilters.region || 'unknown', id: partnerId, isBot: false }
+      });
+    }
   }
 
   // Remove user from waiting queue if already there (cleanup)
@@ -132,6 +142,7 @@ app.post('/api/send-message', (req, res) => {
   const chat = activeChats.get(sessionId);
   if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
   const roomId = chat.roomId;
+  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
   const messages = chatMessages.get(roomId) || [];
   messages.push({ from: sessionId, text, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
@@ -141,25 +152,38 @@ app.post('/api/send-message', (req, res) => {
 app.post('/api/get-messages', (req, res) => {
   const { sessionId, lastTimestamp } = req.body;
   const chat = activeChats.get(sessionId);
-  if (!chat) return res.json({ success: true, messages: [] });
+  if (!chat) return res.json({ success: true, messages: [], chatEnded: true });
   const roomId = chat.roomId;
+  const ended = chatEnded.get(roomId) || false;
+  if (ended) {
+    // Clean up for this user
+    activeChats.delete(sessionId);
+    return res.json({ success: true, messages: [], chatEnded: true });
+  }
   const messages = chatMessages.get(roomId) || [];
   const newMessages = messages.filter(m => m.timestamp > (lastTimestamp || 0));
   const filtered = newMessages.filter(m => m.from !== sessionId);
-  res.json({ success: true, messages: filtered });
+  res.json({ success: true, messages: filtered, chatEnded: false });
 });
 
 app.post('/api/end-chat', (req, res) => {
   const { sessionId } = req.body;
   const chat = activeChats.get(sessionId);
   if (chat) {
+    const roomId = chat.roomId;
+    // Mark chat as ended so partner will be notified
+    chatEnded.set(roomId, true);
+    // Remove partner's chat entry (so they won't be stuck in limbo)
     if (chat.partnerSessionId) {
       const partnerChat = activeChats.get(chat.partnerSessionId);
       if (partnerChat) activeChats.delete(chat.partnerSessionId);
     }
     activeChats.delete(sessionId);
-    const roomId = chat.roomId;
-    chatMessages.delete(roomId);
+    // Keep messages for a while (optional cleanup)
+    setTimeout(() => {
+      chatMessages.delete(roomId);
+      chatEnded.delete(roomId);
+    }, 60000);
   }
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
@@ -268,7 +292,7 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
             <div class="chat-panel">
                 <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;"><span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span><span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span></div>
-                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching only! Invite a friend – when you both click "Find Partner", you'll chat together.</div></div>
+                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Real user matching only! Invite a friend – when you both click "Find Partner", you'll chat together. If your partner leaves, you'll be notified.</div></div>
                 <div class="typing" id="typingIndicator"></div>
                 <div class="input-row"><input type="text" id="chatMsgInput" placeholder="Type a message..."><button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button></div>
             </div>
@@ -328,6 +352,13 @@ const htmlTemplate = `<!DOCTYPE html>
     async function pollMessages() {
         if(!chatActive) return;
         const res = await apiCall('/api/get-messages', 'POST', { sessionId, lastTimestamp: lastMsgTimestamp });
+        if(res.chatEnded) {
+            // Partner ended chat
+            showToast("Your partner has left the chat.", "warning");
+            endChat();
+            addSystemMsg("Chat ended because your partner disconnected.");
+            return;
+        }
         if(res.success && res.messages && res.messages.length) {
             for(let msg of res.messages) {
                 addBubble(msg.text, 'in');
@@ -355,7 +386,11 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!text) return;
         addBubble(text, 'out');
         input.value = '';
-        await apiCall('/api/send-message', 'POST', { sessionId, text });
+        const res = await apiCall('/api/send-message', 'POST', { sessionId, text });
+        if(!res.success && res.message === 'Chat already ended') {
+            showToast("Chat already ended.", "error");
+            endChat();
+        }
     }
 
     function addSystemMsg(t) { const area=document.getElementById('chatMsgsArea'); const div=document.createElement('div'); div.className='sys-msg'; div.innerHTML='<i class="fas fa-info-circle"></i> '+t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
@@ -396,7 +431,7 @@ const htmlTemplate = `<!DOCTYPE html>
     let verified=false;
     verifyBtn.onclick=()=>{ verified=true; verifyBtn.innerHTML='<i class="fas fa-check-circle"></i> Verified ✓'; verifyBtn.classList.add('verified'); document.getElementById('verifyStatus').innerHTML='<span style="color:#10b981;">✓ Verified</span>'; goBtn.disabled=!(acceptCheck.checked && verified); };
     acceptCheck.onchange=()=>{ goBtn.disabled=!(acceptCheck.checked && verified); };
-    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching only! Invite a friend – when you both click 'Find Partner', you'll chat together."); };
+    goBtn.onclick=async()=>{ page1.style.display='none'; page2.classList.add('active'); await checkPremium(); getActiveUsers(); if(activePolling) clearInterval(activePolling); activePolling=setInterval(getActiveUsers,10000); addSystemMsg("👋 Real user matching only! Invite a friend – when you both click 'Find Partner', you'll chat together. If partner leaves, you'll be notified."); };
     document.getElementById('findChatBtn').onclick=findMatch;
     document.getElementById('endChatPageBtn').onclick=endChat;
     document.getElementById('sendChatMsgBtn').onclick=sendMessage;
@@ -417,5 +452,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
   console.log(`👥 Real user matching only (no bots) — friends will be paired together!`);
+  console.log(`🔔 Partner left notification enabled`);
   console.log(`🔑 Razorpay: ${RAZORPAY_KEY_ID === 'YOUR_KEY_ID_HERE' ? '⚠️  Set your keys' : 'active'}`);
 });
