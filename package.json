@@ -15,5 +15,6 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "razorpay": "^2.9.6"
+    "@google/generative-ai": "^0.2.0"
   }
 }
