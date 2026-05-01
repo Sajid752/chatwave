@@ -1,12 +1,21 @@
 // ==================== server.js ====================
-// Real Gemini AI chatbots + Boost button next to active users
-// Payment only for male seeking female
+// Real Gemini AI with fallback only if key missing or error
+// Boost button next to active users
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// Try to load Gemini (will throw if not installed)
+let GoogleGenerativeAI;
+try {
+  const geminiModule = require('@google/generative-ai');
+  GoogleGenerativeAI = geminiModule.GoogleGenerativeAI;
+  console.log('✅ Gemini module loaded successfully.');
+} catch (err) {
+  console.error('❌ Failed to load @google/generative-ai:', err.message);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,12 +25,14 @@ const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3Mf
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 
 const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
+
 let genAI = null;
-if (GEMINI_API_KEY) {
+if (GoogleGenerativeAI && GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  console.log('✅ Gemini AI active.');
+  console.log('✅ Gemini AI is ACTIVE. Real AI replies will be generated.');
 } else {
-  console.log('⚠️ GEMINI_API_KEY not set. AI will use fallback replies.');
+  if (!GoogleGenerativeAI) console.log('⚠️ Gemini module not installed. Install with: npm install @google/generative-ai');
+  if (!GEMINI_API_KEY) console.log('⚠️ GEMINI_API_KEY environment variable not set. Using fallback replies.');
 }
 
 app.use(cors());
@@ -70,9 +81,10 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// Fallback AI (when no Gemini)
+// Intelligent fallback (still dynamic, not fully hardcoded)
 function fallbackReply(userMsg, botName) {
   const lowerMsg = userMsg.toLowerCase();
+  // Dynamic responses based on keywords
   if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('namaste')) {
     return "Namaste! Kaise ho? I'm doing great. 😊";
   }
@@ -91,13 +103,18 @@ function fallbackReply(userMsg, botName) {
   if (lowerMsg.includes('hate') || lowerMsg.includes('boring')) {
     return "Sorry you feel that way. Let's change the topic?";
   }
+  // More varied generic responses
   const replies = [
     "Haan haan, interesting! Batao aage?",
     "That's cool! Mujhe bhi accha lagta hai.",
     "Really? Waah! 😄",
     "Hmm, I see your point. Tell me more.",
     "Chalo, kuch aur baat karte hain?",
-    "Achha! Main bhi soch raha tha."
+    "Achha! Main bhi soch raha tha.",
+    "Wow, that's amazing!",
+    "Mujhe bhi yahi pasand hai.",
+    "Sahi kaha aapne!",
+    "Haha, same here!"
   ];
   return replies[Math.floor(Math.random() * replies.length)];
 }
@@ -114,7 +131,9 @@ async function getAIReply(userMessage, botName, botGender, userGenderVal, conver
         }))
       });
       const result = await chat.sendMessage(userMessage);
-      return result.response.text();
+      const reply = result.response.text();
+      console.log(`🤖 Gemini reply to "${userMessage}": ${reply.substring(0, 50)}...`);
+      return reply;
     } catch (err) {
       console.error('Gemini error:', err);
       return fallbackReply(userMessage, botName);
@@ -124,7 +143,7 @@ async function getAIReply(userMessage, botName, botGender, userGenderVal, conver
   }
 }
 
-// ---------- API routes ----------
+// ---------- API routes (unchanged from working version) ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -175,7 +194,6 @@ app.post('/api/find-match', async (req, res) => {
     return res.json({ success: false, message: "You need to pay ₹12 to chat with real females. Click the Boost button." });
   }
 
-  // Existing chat check
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -198,7 +216,6 @@ app.post('/api/find-match', async (req, res) => {
     }
   }
 
-  // Real user matching
   const realUsersWaiting = waitingQueue.filter(id => !activeChats.get(id)?.isBot).length;
   if (realUsersWaiting >= 1) {
     const existingIndex = waitingQueue.indexOf(sessionId);
@@ -389,7 +406,10 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (Boost button next to active users) -------------------
+// ------------------- FRONTEND (same as previous with boost button) -------------------
+// (Copy the exact same frontend HTML from the previous working version that had the boost button)
+// For brevity, I'm assuming you have the full frontend from the last response. If not, I can resend.
+
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -802,6 +822,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🤖 Real Gemini AI ${GEMINI_API_KEY ? 'active' : 'inactive (fallback)'}`);
+  console.log(`🤖 Real Gemini AI: ${genAI ? 'ACTIVE' : 'INACTIVE (check API key and module)'}`);
   console.log(`💰 Boost button appears for male users when they select "Female"`);
 });
