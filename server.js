@@ -1,6 +1,7 @@
 // ==================== server.js ====================
-// Full-screen chat area, reduced border radius, clean layout
-// Male seeking female forced payment, buttons side by side
+// Full‑screen design, preference modal, ₹2 payment.
+// First page: no borders, full viewport, centered.
+// Chat page: only chat panel (100% width), modal for preferences.
 
 const express = require('express');
 const cors = require('cors');
@@ -17,7 +18,7 @@ const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KE
 app.use(cors());
 app.use(express.json());
 
-// ------------------- IN‑MEMORY STORES -------------------
+// ---------- In‑memory stores ----------
 const activeSessions = new Map();
 const userPremiums = new Map();
 const userGender = new Map();
@@ -50,7 +51,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ------------------- API ROUTINES -------------------
+// ---------- API routes ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -97,7 +98,7 @@ app.post('/api/find-match', (req, res) => {
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
-    return res.json({ success: false, message: "You need to pay ₹12 to chat with females. Please purchase the boost." });
+    return res.json({ success: false, message: "You need to pay ₹2 to chat with females. Please purchase the boost." });
   }
 
   const existingChat = activeChats.get(sessionId);
@@ -246,7 +247,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (full-screen chat, reduced border radius) -------------------
+// ---------- FRONTEND (full‑screen first page, modal preference, ₹2) ----------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -266,78 +267,80 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        .page { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
-        .terms-container { max-width:680px; width:100%; background:white; border-radius:20px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); overflow:hidden; animation:fadeIn 0.4s ease; }
+        
+        /* First page: full viewport, no borders, content centered */
+        .page { min-height:100vh; width:100%; display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); }
+        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:0; box-shadow:none; animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
-        .terms-header { background:linear-gradient(135deg, #1e293b, #0f172a); padding:32px 28px; text-align:center; color:white; }
-        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; }
-        .terms-content { padding:28px 28px 20px; max-height:55vh; overflow-y:auto; }
+        .terms-header { margin-bottom:24px; }
+        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
+        .terms-content { text-align:left; }
         .rule-block { margin-bottom:24px; border-bottom:1px solid #eef2ff; padding-bottom:18px; }
         .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
-        .rule-title i { color:#2563eb; }
+        .rule-title i { color:#2563eb; width:24px; }
         .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
         .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:16px; margin:20px 0; border:1px solid #e2e8f0; }
-        .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; }
-        .gender-selector { margin: 20px 0; }
-        .gender-selector label { font-weight:600; margin-right:16px; }
-        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; }
+        .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
+        .gender-selector { margin: 20px 0; text-align:left; }
+        .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
+        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
         .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
         .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        .chat-page { min-height:100vh; display:none; }
-        .chat-page.active { display:block; }
-        .chat-wrapper { max-width:1400px; margin:0 auto; padding:20px; }
-        .chat-nav { display:flex; justify-content:space-between; align-items:center; background:white; padding:12px 24px; border-radius:40px; margin-bottom:20px; border:1px solid #e2e8f0; }
-        .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
-        .active-users-badge { background:#f1f5f9; padding:8px 18px; border-radius:40px; font-size:0.85rem; font-weight:600; display:flex; align-items:center; gap:8px; }
-        .chat-grid { display:flex; flex-wrap:wrap; gap:20px; }
-        .settings-panel { flex:0.8; min-width:220px; background:white; border-radius:20px; padding:20px; border:1px solid #e2e8f0; height:fit-content; }
-        .chat-panel { flex:4; min-width:280px; background:white; border-radius:20px; display:flex; flex-direction:column; overflow:hidden; border:1px solid #e2e8f0; height:calc(100vh - 120px); max-height:calc(100vh - 120px); }
-        .filter-group { margin-bottom:20px; }
-        .filter-group label { font-weight:600; font-size:0.8rem; color:#334155; display:flex; align-items:center; gap:6px; margin-bottom:8px; }
-        select, button { width:100%; padding:10px 14px; border-radius:28px; border:1px solid #e2e8f0; background:#f9fafb; font-family:inherit; font-size:0.85rem; cursor:pointer; }
-        .btn-primary { background:#2563eb; color:white; border:none; font-weight:600; }
-        .btn-danger { background:#fee2e2; border-color:#fecaca; color:#b91c1c; }
-        .pay-boost { background:#f59e0b; color:white; border:none; margin-bottom:8px; }
-        .pay-boost.hidden { display:none; }
-        .info-badge { background:#f1f5f9; padding:12px; border-radius:16px; font-size:0.7rem; margin:16px 0; }
+        
+        /* Chat page: full‑screen chat panel only (no side panel) */
+        .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; }
+        .chat-page.active { display:flex; flex-direction:column; }
+        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 24px; display:flex; justify-content:space-between; align-items:center; }
+        .logo-small { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
+        .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
         .chat-messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:10px; background:#ffffff; }
-        .msg { max-width:80%; padding:10px 16px; border-radius:18px; font-size:0.85rem; }
+        .msg { max-width:80%; padding:10px 16px; border-radius:18px; font-size:0.9rem; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; }
         .sys-msg { text-align:center; font-size:0.7rem; color:#64748b; margin:4px 0; }
         .typing { font-size:0.7rem; padding-left:20px; color:#64748b; font-style:italic; min-height:24px; }
-        .input-row { display:flex; gap:10px; padding:16px 20px 20px; background:white; border-top:1px solid #e2e8f0; }
-        .input-row input { flex:1; padding:12px 18px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; }
-        .send-btn { background:#2563eb; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; }
+        .input-area { display:flex; gap:10px; padding:16px 20px; background:white; border-top:1px solid #e2e8f0; }
+        .input-area input { flex:1; padding:12px 18px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; font-size:0.9rem; }
+        .send-btn { background:#2563eb; border:none; width:auto; padding:0 24px; border-radius:40px; color:white; font-weight:600; cursor:pointer; }
         .action-buttons { display:flex; gap:10px; padding:0 20px 16px 20px; }
-        .action-buttons button { flex:1; }
+        .action-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; cursor:pointer; }
+        .main-action-btn { background:#2563eb; color:white; border:none; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
-        .status-chip { background:#eef2ff; padding:4px 12px; border-radius:30px; font-size:0.7rem; display:inline-flex; align-items:center; gap:6px; }
-        .dot { width:8px; height:8px; border-radius:8px; display:inline-block; }
-        @media (max-width:700px) {
-            .msg { max-width:90%; }
-            .action-buttons { flex-direction:column; }
-            .action-buttons button { width:100%; }
-            .chat-panel { height:calc(100vh - 180px); max-height:calc(100vh - 180px); }
-            .settings-panel { min-width:100%; }
-        }
+        .main-action-btn.end { background:#ef4444; }
+        
+        /* Premium modal for preference selection */
+        .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); backdrop-filter:blur(6px); display:none; align-items:center; justify-content:center; z-index:2000; }
+        .modal-overlay.active { display:flex; }
+        .premium-modal { background:white; border-radius:24px; max-width:400px; width:90%; padding:28px 24px; text-align:center; box-shadow:0 40px 60px rgba(0,0,0,0.3); }
+        .premium-modal h3 { font-size:1.6rem; margin-bottom:8px; color:#1e293b; }
+        .premium-modal p { color:#475569; margin-bottom:20px; }
+        .preference-options { display:flex; flex-direction:column; gap:12px; margin:20px 0; }
+        .pref-option { display:flex; align-items:center; gap:12px; padding:12px 16px; background:#f8fafc; border-radius:16px; cursor:pointer; border:1px solid #e2e8f0; transition:0.2s; }
+        .pref-option.selected { border-color:#2563eb; background:#eef2ff; }
+        .pref-option i { font-size:1.2rem; width:28px; color:#2563eb; }
+        .pref-option span { flex:1; font-weight:500; }
+        .confirm-pref-btn { background:#2563eb; color:white; border:none; padding:14px; border-radius:40px; width:100%; font-weight:600; margin-top:12px; cursor:pointer; }
+        @media (max-width:700px) { .msg { max-width:90%; } .action-buttons { flex-direction:column; } .action-buttons button { width:100%; } }
     </style>
 </head>
 <body>
 <div class="toast-container" id="toastContainer"></div>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
+<!-- First page (terms & gender) -->
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real chat · Real friends · Real payments</p></div>
+        <div class="terms-header">
+            <h1><i class="fas fa-waveform"></i> ChatWave</h1>
+            <p>Real chat · Real friends · ₹2 payments</p>
+        </div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% match chance. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 100% match chance. Female/Other: always free.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
-            
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
                 <div class="gender-options">
@@ -347,51 +350,57 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
                 <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
             </div>
-            
             <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
             <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
         </div>
     </div>
 </div>
 
+<!-- Chat page (full screen, no side panel) -->
 <div id="page2" class="chat-page">
-    <div class="chat-wrapper">
-        <div class="chat-nav">
-            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
-            <div class="active-users-badge"><i class="fas fa-users"></i><span>Active:</span><span id="activeUserCount">--</span></div>
-        </div>
-        <div class="chat-grid">
-            <div class="settings-panel">
-                <div class="filter-group">
-                    <label><i class="fas fa-heart"></i> I want to chat with</label>
-                    <select id="chatPrefer">
-                        <option value="any">✨ Anyone</option>
-                        <option value="female">👩 Female</option>
-                        <option value="male">👨 Male</option>
-                        <option value="other">🌈 Other</option>
-                    </select>
-                </div>
-                <div class="info-badge"><i class="fas fa-lightbulb"></i> <strong>Real users only!</strong><br>Male seeking female must pay ₹12 to match.</div>
-                <button id="payBoostBtn" class="pay-boost hidden"><i class="fas fa-qrcode"></i> Pay ₹12 (Boost)</button>
-                <div id="paymentStatusChat" class="status-chip" style="margin-top:16px; justify-content:center;"><i class="fas fa-wallet"></i> Loading...</div>
+    <div class="chat-header">
+        <div class="logo-small"><i class="fas fa-waveform"></i> ChatWave</div>
+        <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> active</div>
+    </div>
+    <div class="chat-messages" id="chatMsgsArea">
+        <div class="sys-msg">✨ Welcome! Set your chat preference to start.</div>
+    </div>
+    <div class="typing" id="typingIndicator"></div>
+    <div class="input-area">
+        <input type="text" id="chatMsgInput" placeholder="Type a message..." autocomplete="off" disabled>
+        <button id="sendChatMsgBtn" class="send-btn" disabled><i class="fas fa-paper-plane"></i> Send</button>
+    </div>
+    <div class="action-buttons">
+        <button id="mainActionBtn" class="main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
+        <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
+    </div>
+</div>
+
+<!-- Premium modal for chat preference -->
+<div id="prefModal" class="modal-overlay">
+    <div class="premium-modal">
+        <i class="fas fa-heart" style="font-size:2rem; color:#2563eb;"></i>
+        <h3>Choose who you want to chat with</h3>
+        <p>Select your preference to continue</p>
+        <div class="preference-options">
+            <div class="pref-option" data-pref="any">
+                <i class="fas fa-globe"></i>
+                <span>✨ Anyone (Random)</span>
             </div>
-            <div class="chat-panel">
-                <div style="padding:14px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;">
-                    <span id="partnerNameLabel"><i class="fas fa-user-friends"></i> Not connected</span>
-                    <span id="connBadge" class="status-chip"><span class="dot" style="background:#94a3b8;"></span> Offline</span>
-                </div>
-                <div class="chat-messages" id="chatMsgsArea"><div class="sys-msg">✨ Choose your preference and click "Find Partner".</div></div>
-                <div class="typing" id="typingIndicator"></div>
-                <div class="input-row">
-                    <input type="text" id="chatMsgInput" placeholder="Type a message...">
-                    <button id="sendChatMsgBtn" class="send-btn"><i class="fas fa-paper-plane"></i> Send</button>
-                </div>
-                <div class="action-buttons">
-                    <button id="mainActionBtn" class="btn-primary main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
-                    <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
-                </div>
+            <div class="pref-option" data-pref="female">
+                <i class="fas fa-female"></i>
+                <span>👩 Female only</span>
+            </div>
+            <div class="pref-option" data-pref="male">
+                <i class="fas fa-male"></i>
+                <span>👨 Male only</span>
+            </div>
+            <div class="pref-option" data-pref="other">
+                <i class="fas fa-genderless"></i>
+                <span>🌈 Other only</span>
             </div>
         </div>
+        <button id="confirmPrefBtn" class="confirm-pref-btn">Confirm Preference</button>
     </div>
 </div>
 
@@ -407,38 +416,65 @@ const htmlTemplate = `<!DOCTYPE html>
     let isTyping = false;
     let typingTimeout = null;
     let userGender = null;
+    let selectedPreference = null;
 
-    function showToast(msg, type) { var c=document.getElementById('toastContainer'); var t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(function(){t.remove();},4000); }
+    // DOM elements
+    const page1 = document.getElementById('page1');
+    const page2 = document.getElementById('page2');
+    const prefModal = document.getElementById('prefModal');
+    const prefOptions = document.querySelectorAll('.pref-option');
+    const confirmPrefBtn = document.getElementById('confirmPrefBtn');
+    const mainActionBtn = document.getElementById('mainActionBtn');
+    const skipChatBtn = document.getElementById('skipChatBtn');
+    const sendBtn = document.getElementById('sendChatMsgBtn');
+    const msgInput = document.getElementById('chatMsgInput');
+    const activeUserSpan = document.getElementById('activeUserCount');
+
+    function showToast(msg, type='info') { 
+        const c=document.getElementById('toastContainer'); 
+        const t=document.createElement('div'); 
+        t.className='toast '+type; 
+        t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; 
+        c.appendChild(t); 
+        setTimeout(()=>t.remove(),4000); 
+    }
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
 
     async function apiCall(endpoint, method, data) {
-        var opts = { method: method, headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId } };
+        const opts = { method, headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId } };
         if(data) opts.body = JSON.stringify(data);
-        var res = await fetch(API_BASE+endpoint, opts);
+        const res = await fetch(API_BASE+endpoint, opts);
         return res.json();
     }
 
     async function checkPremium() { 
-        var res = await apiCall('/api/check-premium', 'POST', { sessionId: sessionId }); 
+        const res = await apiCall('/api/check-premium', 'POST', { sessionId }); 
         hasPremium = res.hasPremium; 
         premiumExpiry = res.expiry; 
-        updatePaymentUI();
     }
-    async function getActiveUsers() { var res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
+    async function getActiveUsers() { 
+        const res = await apiCall('/api/active-users', 'GET'); 
+        activeUserSpan.innerText = res.count; 
+    }
 
     async function findMatch() {
         if(chatActive) { endChat(); return; }
-        var prefer = document.getElementById('chatPrefer').value;
-        if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            showToast("You need to pay ₹12 to chat with females. Please purchase the boost.", "warning");
+        if(!selectedPreference) { 
+            showToast("Please set your chat preference first.", "warning");
+            prefModal.classList.add('active');
+            return;
+        }
+        // If male seeking female and no premium, prompt payment
+        if(userGender === 'male' && selectedPreference === 'female' && !hasPremium) {
+            showToast("You need to pay ₹2 to chat with females. Please purchase the boost.", "warning");
             openRazorpay();
             return;
         }
         showLoading(true);
-        var res = await apiCall('/api/find-match', 'POST', {
-            prefer: prefer,
-            sessionId: sessionId,
-            userGender: userGender
+        const res = await apiCall('/api/find-match', 'POST', {
+            prefer: selectedPreference,
+            sessionId,
+            userGender
         });
         showLoading(false);
         if(res.success && res.partner) startChat(res.partner);
@@ -449,7 +485,7 @@ const htmlTemplate = `<!DOCTYPE html>
     async function skipChat() {
         if(!chatActive) { addSystemMsg("No active chat to skip."); return; }
         showLoading(true);
-        var res = await apiCall('/api/skip-chat', 'POST', { sessionId: sessionId });
+        const res = await apiCall('/api/skip-chat', 'POST', { sessionId });
         if(msgInterval) clearInterval(msgInterval);
         if(typingInterval) clearInterval(typingInterval);
         msgInterval = null;
@@ -468,7 +504,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function endChat() {
         if(chatActive) {
-            await apiCall('/api/end-chat', 'POST', { sessionId: sessionId });
+            await apiCall('/api/end-chat', 'POST', { sessionId });
             if(msgInterval) clearInterval(msgInterval);
             if(typingInterval) clearInterval(typingInterval);
             msgInterval = null;
@@ -494,19 +530,17 @@ const htmlTemplate = `<!DOCTYPE html>
         msgInterval = setInterval(pollMessages, 1500);
         if(typingInterval) clearInterval(typingInterval);
         typingInterval = setInterval(pollTyping, 2000);
-        var input = document.getElementById('chatMsgInput');
-        input.value = '';
-        input.disabled = false;
-        input.focus();
-        var mainBtn = document.getElementById('mainActionBtn');
-        mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
-        mainBtn.classList.remove('btn-primary');
-        mainBtn.classList.add('btn-danger');
+        msgInput.value = '';
+        msgInput.disabled = false;
+        sendBtn.disabled = false;
+        msgInput.focus();
+        mainActionBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
+        mainActionBtn.classList.add('end');
     }
 
     async function pollMessages() {
         if(!chatActive) return;
-        var res = await apiCall('/api/get-messages', 'POST', { sessionId: sessionId, lastTimestamp: lastMsgTimestamp });
+        const res = await apiCall('/api/get-messages', 'POST', { sessionId, lastTimestamp: lastMsgTimestamp });
         if(res.chatEnded) {
             showToast("Your partner has left the chat.", "warning");
             endChat();
@@ -514,8 +548,7 @@ const htmlTemplate = `<!DOCTYPE html>
             return;
         }
         if(res.success && res.messages && res.messages.length) {
-            for(var i=0;i<res.messages.length;i++) {
-                var msg = res.messages[i];
+            for(let msg of res.messages) {
                 addBubble(msg.text, 'in');
                 if(msg.timestamp > lastMsgTimestamp) lastMsgTimestamp = msg.timestamp;
             }
@@ -524,7 +557,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function pollTyping() {
         if(!chatActive) return;
-        var res = await apiCall('/api/get-typing', 'POST', { sessionId: sessionId });
+        const res = await apiCall('/api/get-typing', 'POST', { sessionId });
         if(res.isTyping) {
             document.getElementById('typingIndicator').innerText = 'Stranger is typing...';
         } else {
@@ -534,156 +567,173 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function sendTyping(typing) {
         if(!chatActive) return;
-        await apiCall('/api/typing', 'POST', { sessionId: sessionId, isTyping: typing });
+        await apiCall('/api/typing', 'POST', { sessionId, isTyping: typing });
     }
 
     async function sendMessage() {
         if(!chatActive || !activePartner) return;
-        var input = document.getElementById('chatMsgInput');
-        var text = input.value.trim();
+        const text = msgInput.value.trim();
         if(!text) return;
         addBubble(text, 'out');
-        input.value = '';
+        msgInput.value = '';
         if(typingTimeout) clearTimeout(typingTimeout);
         await sendTyping(false);
-        var res = await apiCall('/api/send-message', 'POST', { sessionId: sessionId, text: text });
+        const res = await apiCall('/api/send-message', 'POST', { sessionId, text });
         if(!res.success && res.message === 'Chat already ended') {
             showToast("Chat already ended.", "error");
             endChat();
         }
     }
 
-    function addSystemMsg(t) { var area=document.getElementById('chatMsgsArea'); var div=document.createElement('div'); div.className='sys-msg'; div.innerHTML='<i class="fas fa-info-circle"></i> '+t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
-    function addBubble(t, type) { var area=document.getElementById('chatMsgsArea'); var div=document.createElement('div'); div.className='msg '+(type==='out'?'msg-out':'msg-in'); div.innerText=t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
-    function clearChatMsgs(keepSys){ var area=document.getElementById('chatMsgsArea'); area.innerHTML=''; if(keepSys) addSystemMsg("Chat ended. Click 'Find Partner' to start a new conversation."); }
+    function addSystemMsg(t) { 
+        const area = document.getElementById('chatMsgsArea'); 
+        const div = document.createElement('div'); 
+        div.className = 'sys-msg'; 
+        div.innerHTML = '<i class="fas fa-info-circle"></i> '+t; 
+        area.appendChild(div); 
+        div.scrollIntoView({behavior:'smooth'}); 
+    }
+    function addBubble(t, type) { 
+        const area = document.getElementById('chatMsgsArea'); 
+        const div = document.createElement('div'); 
+        div.className = 'msg '+(type==='out'?'msg-out':'msg-in'); 
+        div.innerText = t; 
+        area.appendChild(div); 
+        div.scrollIntoView({behavior:'smooth'}); 
+    }
+    function clearChatMsgs(keepSys){ 
+        const area = document.getElementById('chatMsgsArea'); 
+        area.innerHTML = ''; 
+        if(keepSys) addSystemMsg("Chat ended. Click 'Find Partner' to start a new conversation."); 
+    }
 
     function updateChatUI() {
-        var pSpan=document.getElementById('partnerNameLabel'); var cSpan=document.getElementById('connBadge'); var sendBtn=document.getElementById('sendChatMsgBtn'); var inp=document.getElementById('chatMsgInput');
-        var mainBtn = document.getElementById('mainActionBtn');
-        if(chatActive && activePartner){
-            pSpan.innerHTML='<i class="fas fa-user-check"></i> Connected to a real person';
-            cSpan.innerHTML='<span class="dot" style="background:#22c55e;"></span> Connected';
-            sendBtn.disabled=false; inp.disabled=false;
-            mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
-            mainBtn.classList.remove('btn-primary');
-            mainBtn.classList.add('btn-danger');
+        if(chatActive && activePartner) {
+            mainActionBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
+            mainActionBtn.classList.add('end');
+            sendBtn.disabled = false;
+            msgInput.disabled = false;
         } else {
-            pSpan.innerHTML='<i class="fas fa-user-slash"></i> Not connected';
-            cSpan.innerHTML='<span class="dot" style="background:#94a3b8;"></span> Offline';
-            sendBtn.disabled=true; inp.disabled=true;
-            mainBtn.innerHTML = '<i class="fas fa-random"></i> Find Partner';
-            mainBtn.classList.remove('btn-danger');
-            mainBtn.classList.add('btn-primary');
+            mainActionBtn.innerHTML = '<i class="fas fa-random"></i> Find Partner';
+            mainActionBtn.classList.remove('end');
+            sendBtn.disabled = true;
+            msgInput.disabled = true;
         }
     }
 
-    function updatePaymentUI() {
-        var payDiv = document.getElementById('paymentStatusChat');
-        var payBtn = document.getElementById('payBoostBtn');
-        var prefer = document.getElementById('chatPrefer').value;
-        
-        if(userGender !== 'male') {
-            payBtn.classList.add('hidden');
-            payDiv.innerHTML = '<i class="fas fa-unlock"></i> Free access – no payment needed';
+    // Preference modal logic
+    prefOptions.forEach(opt => {
+        opt.addEventListener('click', () => {
+            prefOptions.forEach(o => o.classList.remove('selected'));
+            opt.classList.add('selected');
+            selectedPreference = opt.getAttribute('data-pref');
+        });
+    });
+    confirmPrefBtn.addEventListener('click', () => {
+        if(!selectedPreference) {
+            showToast("Please select a preference.", "warning");
             return;
         }
-        
-        if(prefer === 'female') {
-            payBtn.classList.remove('hidden');
-            if(hasPremium && premiumExpiry && Date.now() < premiumExpiry) {
-                var left = Math.floor((premiumExpiry - Date.now())/60000);
-                payDiv.innerHTML = '<i class="fas fa-crown"></i> PREMIUM ('+left+'min left) · 100% female match';
-            } else {
-                payDiv.innerHTML = '<i class="fas fa-clock"></i> No premium · Female match requires payment <button id="payNowBtn" style="margin-top:5px;background:#f59e0b;border:none;padding:5px;">Pay ₹12</button>';
-                var payNow = document.getElementById('payNowBtn');
-                if(payNow) payNow.onclick = openRazorpay;
-            }
-        } else {
-            payBtn.classList.add('hidden');
-            payDiv.innerHTML = '<i class="fas fa-unlock"></i> Free access – payment not required for this preference';
-        }
-    }
+        prefModal.classList.remove('active');
+        addSystemMsg("Preference set: " + (selectedPreference === 'any' ? 'Anyone' : selectedPreference === 'female' ? 'Female only' : selectedPreference === 'male' ? 'Male only' : 'Other only'));
+        // Also store for later use – already in variable
+    });
 
     async function openRazorpay() {
         if(userGender !== 'male'){ showToast("Only male users can buy boost.",'warning'); return; }
         if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ showToast("Premium already active.",'info'); return; }
         showLoading(true);
-        var res = await apiCall('/api/create-order', 'POST', { amount: 12 });
+        const res = await apiCall('/api/create-order', 'POST', { amount: 2 });
         showLoading(false);
         if(!res.success){ showToast("Failed to create order.",'error'); return; }
-        var options = { key: res.key, amount: res.amount, currency: res.currency, name: "ChatWave", description: "Premium Boost (30 min)", order_id: res.orderId, handler: async function(response){
-            showLoading(true);
-            var verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId: sessionId });
-            showLoading(false);
-            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); updatePaymentUI(); }
-            else showToast("Payment verification failed.",'error');
-        }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
-        var rzp = new Razorpay(options);
+        const options = { 
+            key: res.key, 
+            amount: res.amount, 
+            currency: res.currency, 
+            name: "ChatWave", 
+            description: "Premium Boost (30 min) - ₹2", 
+            order_id: res.orderId, 
+            handler: async function(response){
+                showLoading(true);
+                const verifyRes = await apiCall('/api/verify-payment', 'POST', { 
+                    razorpay_order_id: response.razorpay_order_id, 
+                    razorpay_payment_id: response.razorpay_payment_id, 
+                    razorpay_signature: response.razorpay_signature, 
+                    sessionId 
+                });
+                showLoading(false);
+                if(verifyRes.success){ 
+                    showToast("Payment successful! Premium activated for 30 min.",'success'); 
+                    await checkPremium(); 
+                } else showToast("Payment verification failed.",'error');
+            }, 
+            prefill: { name: "ChatWave User", email: "user@chatwave.com" }, 
+            theme: { color: "#2563eb" } 
+        };
+        const rzp = new Razorpay(options);
         rzp.open();
     }
 
-    // Page transitions and gender selection
-    var page1 = document.getElementById('page1');
-    var page2 = document.getElementById('page2');
-    var acceptCheck = document.getElementById('acceptTerms');
-    var goBtn = document.getElementById('goToChatBtn');
-    var genderOptions = document.querySelectorAll('.gender-option');
-    var genderError = document.getElementById('genderError');
-    var selectedGender = null;
+    // First page logic
+    const acceptCheck = document.getElementById('acceptTerms');
+    const goBtn = document.getElementById('goToChatBtn');
+    const genderOptions = document.querySelectorAll('.gender-option');
+    const genderError = document.getElementById('genderError');
+    let selectedGender = null;
 
-    for(var i=0;i<genderOptions.length;i++) {
-        genderOptions[i].addEventListener('click', function() {
-            for(var j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
-            this.classList.add('selected');
-            var radio = this.querySelector('input');
+    genderOptions.forEach(opt => {
+        opt.addEventListener('click', () => {
+            genderOptions.forEach(o => o.classList.remove('selected'));
+            opt.classList.add('selected');
+            const radio = opt.querySelector('input');
             radio.checked = true;
             selectedGender = radio.value;
             genderError.innerText = '';
             validateForm();
         });
-    }
+    });
 
     function validateForm() {
-        var termsChecked = acceptCheck.checked;
-        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
+        const termsChecked = acceptCheck.checked;
+        if(selectedGender && termsChecked) goBtn.disabled = false;
+        else goBtn.disabled = true;
     }
-
     acceptCheck.addEventListener('change', validateForm);
 
-    goBtn.addEventListener('click', function() {
+    goBtn.addEventListener('click', async () => {
         if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
         if(!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
         page2.classList.add('active');
-        checkPremium();
+        await checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Real user matching only! Male users: to chat with females, you must pay ₹12 first.");
-        updatePaymentUI();
-        document.getElementById('chatPrefer').addEventListener('change', updatePaymentUI);
+        addSystemMsg("👋 Welcome! First, set your chat preference using the button or the modal that appears.");
+        // Show preference modal immediately
+        prefModal.classList.add('active');
     });
 
-    document.getElementById('mainActionBtn').onclick = findMatch;
-    document.getElementById('skipChatBtn').onclick = skipChat;
-    document.getElementById('sendChatMsgBtn').onclick = sendMessage;
-    document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
-    
-    var msgInputChat = document.getElementById('chatMsgInput');
-    msgInputChat.addEventListener('input', function() {
+    // Event listeners
+    mainActionBtn.onclick = findMatch;
+    skipChatBtn.onclick = skipChat;
+    sendBtn.onclick = sendMessage;
+    msgInput.onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+    msgInput.addEventListener('input', () => {
         if(!chatActive) return;
-        var currentlyTyping = msgInputChat.value.length > 0;
+        const currentlyTyping = msgInput.value.length > 0;
         if(currentlyTyping && !isTyping) { isTyping = true; sendTyping(true); }
         else if(!currentlyTyping && isTyping) { isTyping = false; sendTyping(false); }
         if(typingTimeout) clearTimeout(typingTimeout);
-        typingTimeout = setTimeout(function() {
+        typingTimeout = setTimeout(() => {
             if(isTyping && chatActive) { isTyping = false; sendTyping(false); }
         }, 2000);
     });
-    
-    document.getElementById('chatPrefer').addEventListener('change', updatePaymentUI);
+
+    // Also add a floating button to change preference later? (optional: can re‑open modal if needed)
+    // For simplicity we'll keep modal accessible via an extra message, but not required.
 </script>
 </body>
 </html>`;
@@ -693,5 +743,7 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🖥️ Full‑screen chat area, reduced border radius, compact controls`);
+  console.log(`🎨 First page: full‑screen, no borders, centered.`);
+  console.log(`💬 Chat page: full‑width chat area, preference modal on start.`);
+  console.log(`💰 Payment amount changed to ₹2.`);
 });
