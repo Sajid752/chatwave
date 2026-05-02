@@ -14,8 +14,7 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
-';
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || null;
 
