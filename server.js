@@ -1,8 +1,9 @@
 // ==================== server.js ====================
-// Real users only. ₹2 boost for male→female (10 min premium).
-// Payment modal on demand (no separate boost button).
-// Tic‑Tac‑Toe with request/accept flow.
-// Mobile layout: buttons side‑by‑side, cleaned margins.
+// First page: rules + "I Agree" (no gender, no checkbox).
+// After agree: chat page opens + auto‑find partner.
+// Gender selector in chat header (for payment logic).
+// Tic‑Tac‑Toe: draw detection fixed.
+// Messages scroll to bottom automatically.
 
 const express = require('express');
 const cors = require('cors');
@@ -484,10 +485,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th><tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (with payment modal, no standalone boost button) -------------------
+// ------------------- FRONTEND (new first page + auto‑find) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -514,35 +515,24 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#f59e0b; color:white; }
         .exit-modal { background:#e2e8f0; color:#1e293b; }
+        /* First page (rules + I Agree) */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
-        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
-        @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
-        .terms-header { margin-bottom:24px; }
-        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
-        .terms-content { text-align:left; }
-        .rule-block { margin-bottom:24px; border-bottom:1px solid #eef2ff; padding-bottom:18px; }
-        .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
-        .rule-title i { color:#2563eb; width:24px; }
-        .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
-        .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:16px; margin:20px 0; border:1px solid #e2e8f0; }
-        .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
-        .gender-selector { margin: 20px 0; text-align:left; }
-        .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
-        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
-        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
-        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
-        .gender-option input { display:none; }
-        .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
-        .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        .rules-container { max-width:550px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); text-align:center; }
+        .rules-header { margin-bottom:20px; }
+        .rules-header h1 { font-size:2rem; color:#1e293b; margin-bottom:8px; }
+        .rules-list { text-align:left; margin:20px 0; padding-left:20px; }
+        .rules-list li { margin:12px 0; color:#334155; }
+        .agree-btn { width:100%; background:#10b981; border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:16px; }
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
         .logo-area { display:flex; align-items:center; gap:12px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
         .active-badge { background:#f1f5f9; padding:6px 12px; border-radius:40px; font-size:0.75rem; display:flex; align-items:center; gap:6px; }
-        .pref-selector { background:#f1f5f9; padding:6px 16px; border-radius:40px; display:flex; align-items:center; gap:12px; }
-        .pref-selector label { font-weight:500; font-size:0.75rem; }
-        .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
+        .pref-and-gender { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+        .gender-selector, .pref-selector { background:#f1f5f9; padding:6px 16px; border-radius:40px; display:flex; align-items:center; gap:8px; }
+        .gender-selector label, .pref-selector label { font-weight:500; font-size:0.75rem; }
+        select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
         .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; margin-left:8px; }
         .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 0; word-break:break-word; }
@@ -568,13 +558,13 @@ const htmlTemplate = `<!DOCTYPE html>
         .main-action-btn.end { background:#ef4444; }
         @media (max-width:700px) {
             .msg { max-width:90%; }
-            .action-buttons-chat { flex-direction:row; } /* Keep side by side */
+            .action-buttons-chat { flex-direction:row; }
             .action-buttons-chat button { width:100%; }
             .game-board { grid-template-columns:repeat(3, 60px); gap:6px; }
             .game-cell { width:60px; height:60px; font-size:1.5rem; }
             .chat-header { flex-direction:column; align-items:stretch; gap:12px; }
             .logo-area { justify-content:space-between; }
-            .pref-selector { justify-content:space-between; width:100%; }
+            .pref-and-gender { justify-content:space-between; width:100%; flex-wrap:wrap; }
         }
     </style>
 </head>
@@ -594,47 +584,56 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
+<!-- First page - Rules and I Agree -->
 <div id="page1" class="page">
-    <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 for male→female (10 min) · Play games</p></div>
-        <div class="terms-content">
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 10min of real female matches. Female/Other: always free.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
-            <div class="gender-selector">
-                <label><i class="fas fa-user"></i> I am a:</label>
-                <div class="gender-options">
-                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
-                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
-                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
-                </div>
-                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
-            </div>
-            <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
-            <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
+    <div class="rules-container">
+        <div class="rules-header">
+            <h1><i class="fas fa-waveform"></i> ChatWave</h1>
+            <p>Talk to strangers!</p>
         </div>
+        <div class="rules-list">
+            <ul>
+                <li>You must be at least 18 years old</li>
+                <li>No nudity, hate speech, or harassment</li>
+                <li>Do not ask for gender. This is not a dating site</li>
+                <li>Respect others and be kind</li>
+                <li>Violators will be banned</li>
+            </ul>
+        </div>
+        <button id="agreeBtn" class="agree-btn">I Agree</button>
     </div>
 </div>
 
+<!-- Chat page -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo-area">
             <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
             <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
         </div>
-        <div class="pref-selector">
-            <label><i class="fas fa-heart"></i> I want:</label>
-            <select id="chatPreferSelect">
-                <option value="any">Anyone</option>
-                <option value="female">Female</option>
-                <option value="male">Male</option>
-                <option value="other">Other</option>
-            </select>
+        <div class="pref-and-gender">
+            <div class="gender-selector">
+                <label><i class="fas fa-user"></i> My gender:</label>
+                <select id="myGenderSelect">
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div class="pref-selector">
+                <label><i class="fas fa-heart"></i> I want:</label>
+                <select id="chatPreferSelect">
+                    <option value="any">Anyone</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
             <button id="gameRequestBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Select your preference and click "Find Partner". Male users will be asked to pay ₹2 to chat with females.</div>
+        <div class="sys-msg">✨ Welcome! Click "Find Partner" to start chatting.</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -664,7 +663,7 @@ const htmlTemplate = `<!DOCTYPE html>
     let gameActive = false;
     let gameBoardVisible = false;
     let mySymbol = null;
-    let pendingFindMatch = false; // to store that we are waiting for payment
+    let pendingFindMatch = false;
 
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
     function scrollToBottom() { var area = document.getElementById('chatMsgsArea'); area.scrollTop = area.scrollHeight; }
@@ -681,7 +680,6 @@ const htmlTemplate = `<!DOCTYPE html>
         hasPremium = res.hasPremium; 
         premiumExpiry = res.expiry; 
     }
-
     async function getActiveUsers() { var res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
     async function sendGameRequest() {
@@ -747,19 +745,21 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function performFindMatch() {
         var prefer = document.getElementById('chatPreferSelect').value;
+        var myGenderVal = document.getElementById('myGenderSelect').value;
+        if(userGender === null) userGender = myGenderVal; // first time
+        if(userGender !== myGenderVal) userGender = myGenderVal; // update
+
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            // Show payment modal
             pendingFindMatch = true;
             document.getElementById('paymentModal').classList.add('active');
             return;
         }
-        // Proceed with matching
         if(chatActive) { endChat(); }
         showLoading(true);
         var res = await apiCall('/api/find-match', 'POST', {
             prefer: prefer,
             sessionId,
-            userGender
+            userGender: userGender
         });
         showLoading(false);
         if(res.success && res.partner) startChat(res.partner);
@@ -779,7 +779,6 @@ const htmlTemplate = `<!DOCTYPE html>
             if(verifyRes.success){ 
                 addSystemMsg("✅ Payment successful! Premium activated for 10 minutes.");
                 await checkPremium(); 
-                // Close modal and retry find match
                 document.getElementById('paymentModal').classList.remove('active');
                 if(pendingFindMatch) {
                     pendingFindMatch = false;
@@ -998,46 +997,20 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    // Page transitions and gender selection
-    var page1 = document.getElementById('page1');
-    var page2 = document.getElementById('page2');
-    var acceptCheck = document.getElementById('acceptTerms');
-    var goBtn = document.getElementById('goToChatBtn');
-    var genderOptions = document.querySelectorAll('.gender-option');
-    var genderError = document.getElementById('genderError');
-    var selectedGender = null;
-
-    for(var i=0;i<genderOptions.length;i++) {
-        genderOptions[i].addEventListener('click', function() {
-            for(var j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
-            this.classList.add('selected');
-            var radio = this.querySelector('input');
-            radio.checked = true;
-            selectedGender = radio.value;
-            genderError.innerText = '';
-            validateForm();
-        });
-    }
-
-    function validateForm() {
-        var termsChecked = acceptCheck.checked;
-        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
-    }
-
-    acceptCheck.addEventListener('change', validateForm);
-
-    goBtn.addEventListener('click', function() {
-        if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
-        if(!acceptCheck.checked) return;
-        userGender = selectedGender;
-        localStorage.setItem('userGender', userGender);
-        page1.style.display = 'none';
-        page2.classList.add('active');
+    // First page: I Agree button
+    document.getElementById('agreeBtn').addEventListener('click', function() {
+        document.getElementById('page1').style.display = 'none';
+        document.getElementById('page2').classList.add('active');
+        // Initialize user gender from dropdown
+        userGender = document.getElementById('myGenderSelect').value;
+        // Pre-fetch premium status and active users
         checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users selecting 'Female' will be asked to pay ₹2 for 10 minutes premium.");
+        addSystemMsg("👋 Welcome! Select your gender and preference, then click 'Find Partner'.");
+        // Auto start finding partner
+        performFindMatch();
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -1047,7 +1020,7 @@ const htmlTemplate = `<!DOCTYPE html>
     document.getElementById('gameRequestBtn').onclick = sendGameRequest;
     document.getElementById('modalPayNow').onclick = openRazorpay;
     document.getElementById('modalExit').onclick = exitPaymentModal;
-    
+
     var msgInputChat = document.getElementById('chatMsgInput');
     msgInputChat.addEventListener('input', function() {
         if(!chatActive) return;
@@ -1058,6 +1031,9 @@ const htmlTemplate = `<!DOCTYPE html>
         typingTimeout = setTimeout(function() {
             if(isTyping && chatActive) { isTyping = false; sendTyping(false); }
         }, 2000);
+    });
+    document.getElementById('myGenderSelect').addEventListener('change', function() {
+        if(userGender !== null) userGender = this.value;
     });
 </script>
 </body>
@@ -1073,6 +1049,6 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
-  console.log(`💰 Payment: ₹2 for 10 min female chat (modal only, no boost button)`);
-  console.log(`🎮 Tic-Tac-Toe with request/accept flow – mobile buttons side by side.`);
+  console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
+  console.log(`🎮 Tic-Tac-Toe draw fixed, first page rules only, auto‑find on agree.`);
 });
