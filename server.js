@@ -1,7 +1,8 @@
 // ==================== server.js ====================
-// First page: gender selection (plain radios) + checkbox.
-// Second page: chat + Tic‑Tac‑Toe (request/accept, multi‑game) + payment modal (₹2 / 10 min).
-// Admin dashboard: modern UI with charts.
+// Original first page: gender + checkbox + "Enter ChatWave".
+// After entering, rules appear as system message in chat.
+// Payment modal for male→female (₹2 / 10 min).
+// Tic-Tac-Toe with draw detection. Messages scroll to bottom.
 
 const express = require('express');
 const cors = require('cors');
@@ -35,19 +36,21 @@ function savePayment(payment) {
   fs.writeFileSync(PAYMENTS_FILE, JSON.stringify(payments, null, 2));
 }
 
-// ---------- In‑memory stores (from second file – multi‑game) ----------
-const activeSessions = new Map();
-const userPremiums = new Map();
-const userGender = new Map();
-const waitingQueue = [];
-const activeChats = new Map();
-const chatMessages = new Map();
-const chatEnded = new Map();
-const userPreferredGender = new Map();
-const typingStatus = new Map();
-const lastPartner = new Map();
+// ---------- In‑memory stores ----------
+const activeSessions = new Map();          // sessionId -> lastSeen
+const userPremiums = new Map();            // sessionId -> expiry timestamp (10 min)
+const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
+const waitingQueue = [];                   // sessionIds waiting for a partner
+const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
+const chatMessages = new Map();            // roomId -> array of messages
+const chatEnded = new Map();               // roomId -> boolean
+const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
+const typingStatus = new Map();            // roomId -> { userId, timestamp }
+const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
 let totalMatches = 0;
-const gameRooms = new Map();
+
+// Game state per room
+const gameRooms = new Map(); // roomId -> { board, currentPlayer, playerX, playerO, gameActive, requestPending, requestFrom }
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -108,7 +111,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ---------- Game helpers (with reset) ----------
+// ---------- Game helpers ----------
 function checkWinner(board) {
   const winPatterns = [
     [0,1,2], [3,4,5], [6,7,8],
@@ -145,18 +148,6 @@ function broadcastGameState(roomId) {
   chatMessages.set(roomId, messages);
 }
 
-function resetGame(roomId) {
-  const game = gameRooms.get(roomId);
-  if (!game) return;
-  game.board = Array(9).fill('');
-  game.currentPlayer = 'X';
-  game.gameActive = false;
-  game.winner = null;
-  game.requestPending = false;
-  game.requestFrom = null;
-  broadcastGameState(roomId);
-}
-
 function handleGameMove(roomId, sessionId, cellIndex) {
   const game = gameRooms.get(roomId);
   if (!game || !game.gameActive) return false;
@@ -177,13 +168,11 @@ function handleGameMove(roomId, sessionId, cellIndex) {
     messages.push({ from: 'system', text: '🏆 You won the game! 🏆', timestamp: Date.now(), target: winnerSession });
     messages.push({ from: 'system', text: '😔 You lost. Better luck next time!', timestamp: Date.now(), target: loserSession });
     chatMessages.set(roomId, messages);
-    setTimeout(() => resetGame(roomId), 3000);
   } else if (isDraw(game.board)) {
     game.gameActive = false;
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: 'system', text: '🤝 Game ended in a draw!', timestamp: Date.now() });
     chatMessages.set(roomId, messages);
-    setTimeout(() => resetGame(roomId), 3000);
   } else {
     game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
   }
@@ -326,8 +315,6 @@ app.post('/api/send-message', (req, res) => {
           game.gameActive = true;
           game.requestPending = false;
           game.requestFrom = null;
-          game.board = Array(9).fill('');
-          game.currentPlayer = 'X';
           const messages = chatMessages.get(roomId) || [];
           messages.push({ from: 'system', text: '🎮 Game accepted! The board will appear. X starts.', timestamp: Date.now() });
           chatMessages.set(roomId, messages);
@@ -473,7 +460,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (improved dashboard) ----------
+// ---------- Admin API (unchanged) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -495,115 +482,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatWave Admin Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        h1 { font-size: 1.8rem; font-weight: 600; color: #0f172a; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
-        .subtitle { color: #475569; margin-bottom: 32px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 32px; }
-        .stat-card { background: white; border-radius: 24px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); transition: transform 0.2s; }
-        .stat-card:hover { transform: translateY(-2px); }
-        .stat-title { font-size: 0.875rem; font-weight: 500; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .stat-value { font-size: 2.5rem; font-weight: 700; color: #0f172a; }
-        .stat-unit { font-size: 1rem; font-weight: 500; color: #94a3b8; margin-left: 4px; }
-        .chart-card { background: white; border-radius: 24px; padding: 24px; margin-bottom: 32px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-        .chart-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 20px; color: #1e293b; }
-        canvas { max-height: 300px; width: 100%; }
-        .table-container { background: white; border-radius: 24px; overflow: auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-        table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 16px 20px; background: #f8fafc; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0; }
-        td { padding: 12px 20px; border-bottom: 1px solid #f1f5f9; color: #1e293b; }
-        tr:hover { background: #f8fafc; }
-        .badge { background: #e2e8f0; color: #475569; border-radius: 40px; padding: 4px 12px; font-size: 0.75rem; font-weight: 500; }
-        .refresh-btn { background: #2563eb; color: white; border: none; padding: 10px 20px; border-radius: 40px; font-weight: 500; cursor: pointer; margin-bottom: 24px; transition: 0.2s; }
-        .refresh-btn:hover { background: #1d4ed8; }
-        footer { text-align: center; margin-top: 32px; color: #94a3b8; font-size: 0.75rem; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1>📊 ChatWave Dashboard</h1>
-    <div class="subtitle">Real‑time analytics & payment overview</div>
-    <button class="refresh-btn" onclick="loadData()">⟳ Refresh Data</button>
-    <div class="stats-grid" id="statsGrid"></div>
-    <div class="chart-card">
-        <div class="chart-title">📈 Daily Payments (last 7 days)</div>
-        <canvas id="dailyChart"></canvas>
-    </div>
-    <div class="chart-card">
-        <div class="chart-title">💳 Recent Transactions</div>
-        <div class="table-container">
-            <table id="paymentsTable">
-                <thead><tr><th>Payment ID</th><th>Amount</th><th>Date & Time</th><th>Session</th><th>Status</th></tr></thead>
-                <tbody></tbody>
-            </table>
-        </div>
-    </div>
-    <footer>© ChatWave — secure, anonymous chat platform</footer>
-</div>
-<script>
-    const API_BASE = '/api/admin/stats?key=${key}';
-    async function loadData() {
-        try {
-            const res = await fetch(API_BASE);
-            const data = await res.json();
-            if (!data.success) return;
-            document.getElementById('statsGrid').innerHTML = \`
-                <div class="stat-card"><div class="stat-title">👥 Active Users</div><div class="stat-value">\${data.activeUsers}<span class="stat-unit"></span></div></div>
-                <div class="stat-card"><div class="stat-title">💬 Total Matches</div><div class="stat-value">\${data.totalMatches}<span class="stat-unit"></span></div></div>
-                <div class="stat-card"><div class="stat-title">💰 Total Revenue</div><div class="stat-value">₹\${data.totalRevenue}<span class="stat-unit"></span></div></div>
-                <div class="stat-card"><div class="stat-title">💳 Payments</div><div class="stat-value">\${data.totalPayments}<span class="stat-unit"></span></div></div>
-            \`;
-            const tbody = document.querySelector('#paymentsTable tbody');
-            tbody.innerHTML = data.recentPayments.map(p => \`
-                <tr>
-                    <td><span class="badge">\${p.id.substring(0, 12)}...</span></td>
-                    <td><strong>₹\${p.amount}</strong></td>
-                    <td>\${new Date(p.timestamp).toLocaleString()}</td>
-                    <td>\${p.sessionId.substring(0, 12)}...</td>
-                    <td><span style="color:#10b981;">✓ Completed</span></td>
-                </tr>
-            \`).join('');
-            const ctx = document.getElementById('dailyChart').getContext('2d');
-            if (window.dailyChart) window.dailyChart.destroy();
-            window.dailyChart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: data.last7Days.map(d => d.date),
-                    datasets: [{
-                        label: 'Amount (₹)',
-                        data: data.last7Days.map(d => d.amount),
-                        backgroundColor: '#3b82f6',
-                        borderRadius: 8,
-                        barPercentage: 0.6
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    plugins: {
-                        legend: { position: 'top' }
-                    }
-                }
-            });
-        } catch(e) { console.error(e); }
-    }
-    loadData();
-    setInterval(loadData, 30000);
-</script>
-</body>
-</html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (merged: first page from first file with plain radios, second page from second file) -------------------
+// ------------------- FRONTEND (original first page, rules in chatbox) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -629,7 +511,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#f59e0b; color:white; }
         .exit-modal { background:#e2e8f0; color:#1e293b; }
-        /* First page (plain radios, fixed) */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -644,11 +525,12 @@ const htmlTemplate = `<!DOCTYPE html>
         .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
         .gender-selector { margin: 20px 0; text-align:left; }
         .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
-        .gender-options { display:flex; gap:20px; justify-content:center; margin-top:10px; }
-        .gender-options label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
+        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
+        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
+        .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        /* Chat page (from second file) */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
@@ -660,7 +542,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-selector label, .pref-selector label { font-weight:500; font-size:0.75rem; }
         select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
         .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; margin-left:8px; }
-        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; scroll-behavior:smooth; }
+        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 0; word-break:break-word; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; }
@@ -709,7 +591,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First page (fixed: plain radio buttons) -->
+<!-- First page (original: gender + checkbox) -->
 <div id="page1" class="page">
     <div class="terms-container">
         <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
@@ -720,11 +602,11 @@ const htmlTemplate = `<!DOCTYPE html>
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
                 <div class="gender-options">
-                    <label><input type="radio" name="userGender" value="male"> Male</label>
-                    <label><input type="radio" name="userGender" value="female"> Female</label>
-                    <label><input type="radio" name="userGender" value="other"> Other</label>
+                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
+                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
+                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
                 </div>
-                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:8px;"></div>
+                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
             </div>
             <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
             <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
@@ -732,7 +614,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Chat page (from second file) -->
+<!-- Chat page -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo-area">
@@ -869,11 +751,6 @@ const htmlTemplate = `<!DOCTYPE html>
             gameBoardVisible = false;
         }
         if(gameBoardVisible) renderGameBoard();
-        if(!state.gameActive && gameBoardVisible) {
-            gameBoardVisible = false;
-            var boardElement = document.getElementById('gameBoard');
-            if(boardElement) boardElement.remove();
-        }
     }
 
     async function performFindMatch() {
@@ -1129,32 +1006,33 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    // First page logic (plain radio buttons)
+    // First page logic
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
     var goBtn = document.getElementById('goToChatBtn');
-    var genderRadios = document.querySelectorAll('input[name="userGender"]');
+    var genderOptions = document.querySelectorAll('.gender-option');
     var genderError = document.getElementById('genderError');
     var selectedGender = null;
+
+    for(var i=0;i<genderOptions.length;i++) {
+        genderOptions[i].addEventListener('click', function() {
+            for(var j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
+            this.classList.add('selected');
+            var radio = this.querySelector('input');
+            radio.checked = true;
+            selectedGender = radio.value;
+            genderError.innerText = '';
+            validateForm();
+        });
+    }
 
     function validateForm() {
         var termsChecked = acceptCheck.checked;
         if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
     }
 
-    for(var i=0;i<genderRadios.length;i++) {
-        genderRadios[i].addEventListener('change', function() {
-            if(this.checked) {
-                selectedGender = this.value;
-                genderError.innerText = '';
-                validateForm();
-            }
-        });
-    }
-
     acceptCheck.addEventListener('change', validateForm);
-    validateForm();
 
     goBtn.addEventListener('click', function() {
         if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
@@ -1163,12 +1041,14 @@ const htmlTemplate = `<!DOCTYPE html>
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
         page2.classList.add('active');
+        // Show the welcome rules in chatbox
         var rulesText = "Welcome to chatwave! Please read the rules below:\n• You must be at least 18 years old\n• No nudity, hate speech, or harassment\n• Do not ask for gender. This is not a dating site\n• Respect others and be kind\n• Violators will be banned";
         addSystemMsg(rulesText);
         checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
+        // Optionally auto‑find? We'll let user click "Find Partner"
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -1208,5 +1088,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
-  console.log(`🎮 Tic‑Tac‑Toe: after game ends, users can start a new game via the same button.`);
+  console.log(`🎮 Tic-Tac-Toe draw fixed, rules appear in chatbox after entering.`);
 });
