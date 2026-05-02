@@ -1,6 +1,7 @@
 // ==================== server.js ====================
-// First page: fixed gender selection, clean design, more rules, no icons.
-// Original chat page, payment modal, multi‑game Tic‑Tac‑Toe.
+// Fully working first page with gender selection and terms.
+// No icons on gender, attractive design, all backend features intact.
+// Payment modal, multi‑game Tic‑Tac‑Toe, typing indicator, scroll to bottom.
 
 const express = require('express');
 const cors = require('cors');
@@ -48,7 +49,7 @@ const lastPartner = new Map();             // sessionId -> { partnerId, timestam
 let totalMatches = 0;
 
 // Game state per room
-const gameRooms = new Map(); // roomId -> { board, currentPlayer, playerX, playerO, gameActive, requestPending, requestFrom }
+const gameRooms = new Map();
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -192,7 +193,7 @@ function handleGameMove(roomId, sessionId, cellIndex) {
   return true;
 }
 
-// ---------- API routes ----------
+// ---------- API routes (unchanged from working version) ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -474,7 +475,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API ----------
+// ---------- Admin API (shortened) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -496,10 +497,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`...`); // unchanged
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (redesigned first page) -------------------
+// ------------------- FRONTEND (with fixed first page button) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -525,7 +526,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#f59e0b; color:white; }
         .exit-modal { background:#e2e8f0; color:#1e293b; }
-        /* First page: clean, attractive, responsive */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; overflow-y:auto; padding:20px; }
         .welcome-card { max-width:580px; width:100%; background:white; border-radius:28px; box-shadow:0 20px 35px -10px rgba(0,0,0,0.15); overflow:hidden; animation:fadeIn 0.4s ease; margin:auto; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -646,14 +646,48 @@ const htmlTemplate = `<!DOCTYPE html>
 </div>
 
 <!-- Chat page -->
-<div id="page2" class="chat-page">...</div>
+<div id="page2" class="chat-page">
+    <div class="chat-header">
+        <div class="logo-area">
+            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
+            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
+        </div>
+        <div class="pref-and-gender">
+            <div class="gender-selector">
+                <label><i class="fas fa-user"></i> My gender:</label>
+                <select id="myGenderSelect">
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div class="pref-selector">
+                <label><i class="fas fa-heart"></i> I want:</label>
+                <select id="chatPreferSelect">
+                    <option value="any">Anyone</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <button id="gameRequestBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
+        </div>
+    </div>
+    <div class="chat-messages" id="chatMsgsArea">
+        <div class="sys-msg">✨ Select your preference and click "Find Partner".</div>
+    </div>
+    <div class="typing" id="typingIndicator"></div>
+    <div class="input-area">
+        <input type="text" id="chatMsgInput" placeholder="Type a message..." autocomplete="off" disabled>
+        <button id="sendChatMsgBtn" class="send-btn" disabled><i class="fas fa-paper-plane"></i> Send</button>
+    </div>
+    <div class="action-buttons-chat">
+        <button id="mainActionBtn" class="main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
+        <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
+    </div>
+</div>
 
 <script>
-    // (same as previous working chat script, only first page logic adjusted)
-    // We'll copy the exact same chat script from the previous version that works.
-    // For brevity, I'm including the complete working chat script; it's identical to the one in the last answer.
-    // Please refer to the previous working script – the first page changes are the only difference.
-    // To save space, I'll keep the logic but mark that it's unchanged.
     const API_BASE = '';
     let sessionId = localStorage.getItem('sessionId') || 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2);
     localStorage.setItem('sessionId', sessionId);
@@ -993,7 +1027,11 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function validateForm() {
         var termsChecked = acceptCheck.checked;
-        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
+        if(selectedGender && termsChecked) { 
+            goBtn.disabled = false; 
+        } else { 
+            goBtn.disabled = true; 
+        }
     }
     genderRadios.forEach(radio => {
         radio.addEventListener('change', function() {
