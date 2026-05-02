@@ -1,8 +1,8 @@
 // ==================== server.js ====================
 // Real users only. ₹2 boost for male→female.
-// Dynamic rematch cooldown based on active users.
-// Tic‑Tac‑Toe game with full server‑side state synchronisation.
-// All messages appear in chatbox.
+// Dynamic rematch cooldown.
+// Tic‑Tac‑Toe with request/accept flow.
+// Responsive layout – online badge next to logo, game button on preference line.
 
 const express = require('express');
 const cors = require('cors');
@@ -14,7 +14,8 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
+';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || null;
 
@@ -50,7 +51,7 @@ const lastPartner = new Map();             // sessionId -> { partnerId, timestam
 let totalMatches = 0;
 
 // Game state per room
-const gameRooms = new Map(); // roomId -> { board: Array(9), currentPlayer: 'X' or 'O', playerX: sessionId, playerO: sessionId, gameActive: bool }
+const gameRooms = new Map(); // roomId -> { board, currentPlayer, playerX, playerO, gameActive, requestPending, requestFrom }
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -77,9 +78,9 @@ function getActiveUserCount() {
 
 function getRematchCooldown() {
   const active = getActiveUserCount();
-  if (active > 20) return 120000;   // 2 minutes
-  if (active >= 10) return 60000;   // 1 minute
-  return 30000;                      // 30 seconds
+  if (active > 20) return 120000;
+  if (active >= 10) return 60000;
+  return 30000;
 }
 
 function tryMatchRealUsers() {
@@ -149,14 +150,12 @@ function broadcastGameState(roomId) {
 function handleGameMove(roomId, sessionId, cellIndex) {
   const game = gameRooms.get(roomId);
   if (!game || !game.gameActive) return false;
-  // Determine if it's the player's turn
   const isPlayerX = (game.playerX === sessionId);
   const isPlayerO = (game.playerO === sessionId);
   if (isPlayerX && game.currentPlayer !== 'X') return false;
   if (isPlayerO && game.currentPlayer !== 'O') return false;
   if (game.board[cellIndex] !== '') return false;
 
-  // Make move
   game.board[cellIndex] = game.currentPlayer;
   const winner = checkWinner(game.board);
   if (winner) {
@@ -164,20 +163,16 @@ function handleGameMove(roomId, sessionId, cellIndex) {
     game.winner = winner;
     const winnerSession = (winner === 'X') ? game.playerX : game.playerO;
     const loserSession = (winner === 'X') ? game.playerO : game.playerX;
-    const winMsg = `🏆 You won the game! 🏆`;
-    const loseMsg = `😔 You lost. Better luck next time!`;
     const messages = chatMessages.get(roomId) || [];
-    messages.push({ from: 'system', text: winMsg, timestamp: Date.now(), target: winnerSession });
-    messages.push({ from: 'system', text: loseMsg, timestamp: Date.now(), target: loserSession });
+    messages.push({ from: 'system', text: '🏆 You won the game! 🏆', timestamp: Date.now(), target: winnerSession });
+    messages.push({ from: 'system', text: '😔 You lost. Better luck next time!', timestamp: Date.now(), target: loserSession });
     chatMessages.set(roomId, messages);
   } else if (isDraw(game.board)) {
     game.gameActive = false;
-    const drawMsg = `🤝 Game ended in a draw!`;
     const messages = chatMessages.get(roomId) || [];
-    messages.push({ from: 'system', text: drawMsg, timestamp: Date.now() });
+    messages.push({ from: 'system', text: '🤝 Game ended in a draw!', timestamp: Date.now() });
     chatMessages.set(roomId, messages);
   } else {
-    // Switch turn
     game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
   }
   broadcastGameState(roomId);
@@ -273,15 +268,17 @@ app.post('/api/find-match', (req, res) => {
       const partnerId = chat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
-      // Initialize game room for the new pair
       const roomId = chat.roomId;
+      // Initialise game room (inactive until accepted)
       gameRooms.set(roomId, {
         board: Array(9).fill(''),
         currentPlayer: 'X',
-        playerX: sessionId,   // first user in room is X
-        playerO: partnerId,   // second user is O
-        gameActive: true,
-        winner: null
+        playerX: sessionId,
+        playerO: partnerId,
+        gameActive: false,
+        winner: null,
+        requestPending: false,
+        requestFrom: null
       });
       return res.json({
         success: true,
@@ -293,32 +290,6 @@ app.post('/api/find-match', (req, res) => {
   return res.json({ success: false, message: "No real users online. Please try again later." });
 });
 
-app.post('/api/typing', (req, res) => {
-  const { sessionId, isTyping } = req.body;
-  const chat = activeChats.get(sessionId);
-  if (!chat) return res.json({ success: false });
-  const roomId = chat.roomId;
-  if (isTyping) {
-    typingStatus.set(roomId, { userId: sessionId, timestamp: Date.now() });
-  } else {
-    const current = typingStatus.get(roomId);
-    if (current && current.userId === sessionId) typingStatus.delete(roomId);
-  }
-  res.json({ success: true });
-});
-
-app.post('/api/get-typing', (req, res) => {
-  const { sessionId } = req.body;
-  const chat = activeChats.get(sessionId);
-  if (!chat) return res.json({ isTyping: false });
-  const roomId = chat.roomId;
-  const typing = typingStatus.get(roomId);
-  if (typing && typing.userId !== sessionId && (Date.now() - typing.timestamp) < 2500) {
-    return res.json({ isTyping: true });
-  }
-  res.json({ isTyping: false });
-});
-
 app.post('/api/send-message', (req, res) => {
   const { sessionId, text } = req.body;
   const chat = activeChats.get(sessionId);
@@ -326,19 +297,48 @@ app.post('/api/send-message', (req, res) => {
   const roomId = chat.roomId;
   if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
 
-  // Handle game move messages (JSON)
-  if (text.startsWith('{') && text.includes('game_move')) {
+  // Handle game request / accept / decline / move
+  if (text.startsWith('{') && text.includes('game_')) {
     try {
       const data = JSON.parse(text);
-      if (data.type === 'game_move') {
+      if (data.type === 'game_request') {
+        const game = gameRooms.get(roomId);
+        if (game && !game.gameActive && !game.requestPending) {
+          game.requestPending = true;
+          game.requestFrom = sessionId;
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '🎮 The other user wants to play Tic‑Tac‑Toe. Accept? (Click Accept/Decline below)', timestamp: Date.now(), target: chat.partnerSessionId, actions: ['accept_game', 'decline_game'] });
+          chatMessages.set(roomId, messages);
+        }
+      } else if (data.type === 'game_accept') {
+        const game = gameRooms.get(roomId);
+        if (game && game.requestPending && game.requestFrom === chat.partnerSessionId) {
+          game.gameActive = true;
+          game.requestPending = false;
+          game.requestFrom = null;
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '🎮 Game accepted! The board will appear. X starts.', timestamp: Date.now() });
+          chatMessages.set(roomId, messages);
+          broadcastGameState(roomId);
+        }
+      } else if (data.type === 'game_decline') {
+        const game = gameRooms.get(roomId);
+        if (game && game.requestPending && game.requestFrom === chat.partnerSessionId) {
+          game.requestPending = false;
+          game.requestFrom = null;
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '❌ The other user declined to play.', timestamp: Date.now(), target: game.requestFrom });
+          chatMessages.set(roomId, messages);
+        }
+      } else if (data.type === 'game_move') {
         const success = handleGameMove(roomId, sessionId, data.index);
         if (!success) {
           const messages = chatMessages.get(roomId) || [];
-          messages.push({ from: 'system', text: "❌ Invalid move or not your turn.", timestamp: Date.now(), target: sessionId });
+          messages.push({ from: 'system', text: '❌ Invalid move or not your turn.', timestamp: Date.now(), target: sessionId });
           chatMessages.set(roomId, messages);
         }
       }
-    } catch(e) { /* ignore */ }
+    } catch(e) { /* ignore non‑JSON */ }
   } else {
     // Normal chat message
     const messages = chatMessages.get(roomId) || [];
@@ -361,7 +361,6 @@ app.post('/api/get-messages', (req, res) => {
   }
   const messages = chatMessages.get(roomId) || [];
   const newMessages = messages.filter(m => m.timestamp > (lastTimestamp || 0));
-  // Filter messages meant for this user (target field)
   const filtered = newMessages.filter(m => {
     if (m.target && m.target !== sessionId) return false;
     if (m.from !== sessionId) return true;
@@ -403,8 +402,10 @@ app.post('/api/skip-chat', async (req, res) => {
         currentPlayer: 'X',
         playerX: sessionId,
         playerO: partnerId,
-        gameActive: true,
-        winner: null
+        gameActive: false,
+        winner: null,
+        requestPending: false,
+        requestFrom: null
       });
       return res.json({
         success: true,
@@ -440,7 +441,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (unchanged) ----------
+// ---------- Admin API (same as before, shortened for brevity) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -465,7 +466,7 @@ app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (improved game UI) -------------------
+// ------------------- FRONTEND (request/accept game, mobile layout) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -504,25 +505,32 @@ const htmlTemplate = `<!DOCTYPE html>
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
-        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+        .logo-area { display:flex; align-items:center; gap:12px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
-        .header-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-        .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
-        .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
-        .boost-btn.visible { display:block; }
-        .game-btn { background:#10b981; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; margin-left:5px; }
-        .pref-selector { display:flex; align-items:center; gap:8px; background:#f1f5f9; padding:6px 14px; border-radius:40px; }
+        .active-badge { background:#f1f5f9; padding:6px 12px; border-radius:40px; font-size:0.75rem; display:flex; align-items:center; gap:6px; }
+        .pref-and-game { display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:#f1f5f9; padding:6px 16px; border-radius:40px; }
+        .pref-selector { display:flex; align-items:center; gap:8px; }
         .pref-selector label { font-weight:500; font-size:0.75rem; }
         .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
+        .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; }
+        .boost-btn { background:#f59e0b; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; display:none; }
+        .boost-btn.visible { display:inline-block; }
+        .header-right { display:flex; align-items:center; gap:12px; }
         @media (max-width: 768px) {
-            .chat-header { flex-direction:column; align-items:stretch; }
-            .header-right { justify-content:space-between; }
+            .chat-header { flex-direction:column; align-items:stretch; gap:12px; }
+            .logo-area { justify-content:space-between; }
+            .pref-and-game { justify-content:space-between; width:100%; }
+            .pref-selector { flex:1; }
         }
         .chat-messages { flex:1; overflow-y:auto; padding:0; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 8px; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; margin-left:12px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; margin-right:12px; }
-        .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; }
+        .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; display:flex; flex-direction:column; gap:8px; }
+        .action-buttons { display:flex; gap:6px; justify-content:center; margin-top:4px; }
+        .action-btn { background:#2563eb; color:white; border:none; padding:4px 12px; border-radius:40px; cursor:pointer; font-size:0.7rem; }
+        .action-btn.decline { background:#ef4444; }
         .game-board { display:grid; grid-template-columns:repeat(3, 80px); gap:8px; justify-content:center; margin:10px 0; background:#f8fafc; padding:15px; border-radius:16px; align-self:center; }
         .game-cell { width:80px; height:80px; background:white; border:2px solid #cbd5e1; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:2rem; font-weight:bold; cursor:pointer; transition:0.2s; }
         .game-cell.active { cursor:pointer; background:#eef2ff; }
@@ -532,15 +540,15 @@ const htmlTemplate = `<!DOCTYPE html>
         .input-area { display:flex; gap:10px; padding:12px 16px; background:white; border-top:1px solid #e2e8f0; }
         .input-area input { flex:1; padding:12px 16px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; font-size:0.9rem; }
         .send-btn { background:#2563eb; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; cursor:pointer; }
-        .action-buttons { display:flex; gap:10px; padding:0 16px 16px 16px; }
-        .action-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; cursor:pointer; }
+        .action-buttons-chat { display:flex; gap:10px; padding:0 16px 16px 16px; }
+        .action-buttons-chat button { flex:1; padding:12px; border-radius:40px; font-weight:600; cursor:pointer; }
         .main-action-btn { background:#2563eb; color:white; border:none; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .main-action-btn.end { background:#ef4444; }
         @media (max-width:700px) {
             .msg { max-width:90%; }
-            .action-buttons { flex-direction:column; }
-            .action-buttons button { width:100%; }
+            .action-buttons-chat { flex-direction:column; }
+            .action-buttons-chat button { width:100%; }
             .game-board { grid-template-columns:repeat(3, 60px); gap:6px; }
             .game-cell { width:60px; height:60px; font-size:1.5rem; }
         }
@@ -551,7 +559,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Play Tic‑Tac‑Toe</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Play games together</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 30min of real female matches. Female/Other: always free.</div></div>
@@ -573,8 +581,11 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page2" class="chat-page">
     <div class="chat-header">
-        <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
-        <div class="header-right">
+        <div class="logo-area">
+            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
+            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
+        </div>
+        <div class="pref-and-game">
             <div class="pref-selector">
                 <label><i class="fas fa-heart"></i> I want:</label>
                 <select id="chatPreferSelect">
@@ -584,20 +595,19 @@ const htmlTemplate = `<!DOCTYPE html>
                     <option value="other">Other</option>
                 </select>
             </div>
-            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
+            <button id="gameRequestBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
             <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹2 Boost</button>
-            <button id="gameBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Select your preference and click "Find Partner". Play Tic-Tac-Toe in real time!</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner". Invite your partner to play Tic‑Tac‑Toe!</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
         <input type="text" id="chatMsgInput" placeholder="Type a message..." autocomplete="off" disabled>
         <button id="sendChatMsgBtn" class="send-btn" disabled><i class="fas fa-paper-plane"></i> Send</button>
     </div>
-    <div class="action-buttons">
+    <div class="action-buttons-chat">
         <button id="mainActionBtn" class="main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
         <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
     </div>
@@ -619,6 +629,7 @@ const htmlTemplate = `<!DOCTYPE html>
     let myTurn = false;
     let gameActive = false;
     let gameBoardVisible = false;
+    let mySymbol = null;
 
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
 
@@ -647,21 +658,34 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    async function startGame() {
+    async function sendGameRequest() {
         if(!chatActive) { addSystemMsg("You need to be connected to someone first."); return; }
-        if(gameActive) { addSystemMsg("Game already active."); return; }
-        // The game state is always present (initialised when chat starts). Just make it visible.
-        if(gameBoardVisible) return;
-        gameBoardVisible = true;
-        addSystemMsg("🎮 Game board activated. Each player makes a move in turn.");
-        renderGameBoard();
-        // Send a game start request to the server? The server already has the game state.
-        // We'll just listen for updates.
+        if(gameActive) { addSystemMsg("A game is already active."); return; }
+        var msg = JSON.stringify({ type: 'game_request' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+        addSystemMsg("🎮 Game request sent. Waiting for partner to accept...");
+    }
+
+    async function acceptGame(partnerId) {
+        var msg = JSON.stringify({ type: 'game_accept' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+    }
+    async function declineGame() {
+        var msg = JSON.stringify({ type: 'game_decline' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+    }
+
+    async function makeMove(index) {
+        if(!chatActive || !gameActive || !myTurn) return;
+        if(!gameBoard || gameBoard[index] !== '') return;
+        var moveMsg = JSON.stringify({ type: 'game_move', index: index });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
     }
 
     function renderGameBoard() {
         var oldBoard = document.getElementById('gameBoard');
         if(oldBoard) oldBoard.remove();
+        if(!gameBoardVisible) return;
         var container = document.getElementById('chatMsgsArea');
         var boardDiv = document.createElement('div');
         boardDiv.id = 'gameBoard';
@@ -679,18 +703,6 @@ const htmlTemplate = `<!DOCTYPE html>
         boardDiv.scrollIntoView({behavior:'smooth'});
     }
 
-    async function makeMove(index) {
-        if(!chatActive || !gameActive || !myTurn) return;
-        if(!gameBoard || gameBoard[index] !== '') return;
-        var moveMsg = JSON.stringify({ type: 'game_move', index: index });
-        showLoading(true);
-        var res = await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
-        showLoading(false);
-        if(!res.success) {
-            addSystemMsg("Could not make move. Try again.");
-        }
-    }
-
     function handleGameState(state) {
         gameBoard = state.board;
         myTurn = (state.currentPlayer === 'X' && mySymbol === 'X') || (state.currentPlayer === 'O' && mySymbol === 'O');
@@ -701,6 +713,7 @@ const htmlTemplate = `<!DOCTYPE html>
             } else if(state.winner) {
                 addSystemMsg("😔 You lost. Better luck next time!");
             }
+            gameBoardVisible = false;
         }
         if(gameBoardVisible) renderGameBoard();
     }
@@ -768,14 +781,13 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) endChat();
         activePartner = partner;
         chatActive = true;
-        gameActive = true;
-        gameBoardVisible = false;  // board will appear only when user clicks "Play"
-        // Determine my symbol based on order (first user is X, second is O)
-        // The client doesn't know yet – will be set when first game state arrives.
+        gameActive = false;
+        gameBoardVisible = false;
         mySymbol = null;
+        roomId = null;
         clearChatMsgs();
         var genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
-        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello or play Tic-Tac-Toe!');
+        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello or invite them to play Tic‑Tac‑Toe!');
         updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
@@ -804,27 +816,42 @@ const htmlTemplate = `<!DOCTYPE html>
             for(var i=0;i<res.messages.length;i++) {
                 var msg = res.messages[i];
                 if(msg.from === 'system') {
-                    addSystemMsg(msg.text);
+                    // if message contains 'accept_game' actions, we need to render buttons
+                    if(msg.actions && msg.actions.includes('accept_game')) {
+                        var wrapper = document.createElement('div');
+                        wrapper.className = 'sys-msg';
+                        wrapper.innerHTML = '<i class="fas fa-info-circle"></i> ' + msg.text;
+                        var btnDiv = document.createElement('div');
+                        btnDiv.className = 'action-buttons';
+                        var acceptBtn = document.createElement('button');
+                        acceptBtn.innerText = 'Accept';
+                        acceptBtn.className = 'action-btn';
+                        acceptBtn.onclick = () => acceptGame();
+                        var declineBtn = document.createElement('button');
+                        declineBtn.innerText = 'Decline';
+                        declineBtn.className = 'action-btn decline';
+                        declineBtn.onclick = () => declineGame();
+                        btnDiv.appendChild(acceptBtn);
+                        btnDiv.appendChild(declineBtn);
+                        wrapper.appendChild(btnDiv);
+                        document.getElementById('chatMsgsArea').appendChild(wrapper);
+                        wrapper.scrollIntoView({behavior:'smooth'});
+                    } else {
+                        addSystemMsg(msg.text);
+                    }
                 } else if(msg.from === 'game') {
                     try {
                         var data = JSON.parse(msg.text);
                         if(data.type === 'game_state') {
-                            if(!mySymbol) {
-                                // Determine if we are X or O by comparing sessionId
-                                // The server does not send this, but we can deduce from who is X
-                                // We'll store later when we know whose turn – for now just set based on currentPlayer?
-                                // Actually easier: the client will know its symbol after the first move?
-                                // For now, just assume we are X if we are first user? Not reliable.
-                                // Better: server can send both players' IDs? Not needed. We'll just compute turn based on currentPlayer vs who moves.
-                                // For turn indication, we only need myTurn. The server sends currentPlayer, we compare with stored mySymbol.
-                                // We'll set mySymbol when we receive the first game state: if currentPlayer is 'X' and it's not our turn? No.
-                                // The simplest: we don't need mySymbol. We just need to know if it's our turn.
-                                // We can compute myTurn by comparing currentPlayer with the player who made the last move?
-                                // This is messy. Better to add a field 'yourSymbol' in the game_state.
-                                // Let's extend the server to send 'yourSymbol' to each client.
-                                // I will modify the server code to include 'yourSymbol' in the game_state message.
-                            }
+                            if(mySymbol === null && data.playerX === sessionId) mySymbol = 'X';
+                            else if(mySymbol === null && data.playerO === sessionId) mySymbol = 'O';
+                            else if(mySymbol === null) mySymbol = 'X'; // fallback
                             handleGameState(data);
+                            if(!gameBoardVisible && data.gameActive) {
+                                gameBoardVisible = true;
+                                renderGameBoard();
+                                addSystemMsg("🎮 Game started! " + (myTurn ? "Your turn (X)." : "Opponent's turn (O)."));
+                            }
                         }
                     } catch(e) {}
                 } else {
@@ -928,7 +955,7 @@ const htmlTemplate = `<!DOCTYPE html>
         rzp.open();
     }
 
-    // Page transitions
+    // Page transitions and gender selection
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -967,7 +994,7 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Play Tic-Tac-Toe with your partner!");
+        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Invite your partner to play Tic-Tac-Toe!");
         document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
         updateBoostButtonVisibility();
     });
@@ -977,7 +1004,7 @@ const htmlTemplate = `<!DOCTYPE html>
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
     document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
     document.getElementById('boostHeaderBtn').onclick = openRazorpay;
-    document.getElementById('gameBtn').onclick = startGame;
+    document.getElementById('gameRequestBtn').onclick = sendGameRequest;
     
     var msgInputChat = document.getElementById('chatMsgInput');
     msgInputChat.addEventListener('input', function() {
@@ -1005,5 +1032,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment amount: ₹2 (male→female boost)`);
-  console.log(`🎮 Real‑time Tic‑Tac‑Toe game active between connected users.`);
+  console.log(`🎮 Tic‑Tac‑Toe with request/accept flow – no more “game already active” without request.`);
 });
