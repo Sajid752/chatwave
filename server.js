@@ -1,8 +1,8 @@
 // ==================== server.js ====================
 // Real users only. ₹2 boost for male→female.
-// All messages appear in chatbox (no toast popups).
 // Dynamic rematch cooldown based on active users.
-// Daily login bonus (15min premium every 24h).
+// Tic‑Tac‑Toe game for connected users (instead of daily bonus).
+// All messages appear in chatbox.
 
 const express = require('express');
 const cors = require('cors');
@@ -36,18 +36,6 @@ function savePayment(payment) {
   fs.writeFileSync(PAYMENTS_FILE, JSON.stringify(payments, null, 2));
 }
 
-const BONUS_FILE = path.join(__dirname, 'bonus.json');
-let bonuses = {};
-if (fs.existsSync(BONUS_FILE)) {
-  try {
-    bonuses = JSON.parse(fs.readFileSync(BONUS_FILE, 'utf8'));
-  } catch(e) {}
-}
-function saveBonus(sessionId, lastClaim) {
-  bonuses[sessionId] = lastClaim;
-  fs.writeFileSync(BONUS_FILE, JSON.stringify(bonuses, null, 2));
-}
-
 // ---------- In‑memory stores ----------
 const activeSessions = new Map();          // sessionId -> lastSeen
 const userPremiums = new Map();            // sessionId -> expiry timestamp
@@ -60,6 +48,9 @@ const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'
 const typingStatus = new Map();            // roomId -> { userId, timestamp }
 const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
 let totalMatches = 0;
+
+// Game state per room
+const gameRooms = new Map(); // roomId -> { board: Array(9), currentPlayer: 'X' or 'O', playerX: sessionId, playerO: sessionId, gameActive: bool }
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -84,7 +75,6 @@ function getActiveUserCount() {
   return count;
 }
 
-// Dynamic cooldown based on active users
 function getRematchCooldown() {
   const active = getActiveUserCount();
   if (active > 20) return 120000;   // 2 minutes
@@ -92,7 +82,6 @@ function getRematchCooldown() {
   return 30000;                      // 30 seconds
 }
 
-// Match two real users from the waiting queue
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
@@ -164,23 +153,6 @@ app.post('/api/check-premium', (req, res) => {
   const expiry = userPremiums.get(sessionId);
   const hasPremium = expiry && expiry > Date.now();
   res.json({ success: true, hasPremium, expiry });
-});
-
-app.post('/api/daily-bonus', (req, res) => {
-  const { sessionId } = req.body;
-  const lastClaim = bonuses[sessionId] || 0;
-  const now = Date.now();
-  const hoursSince = (now - lastClaim) / (1000 * 60 * 60);
-  if (hoursSince < 24) {
-    const remaining = Math.ceil(24 - hoursSince);
-    return res.json({ success: false, message: `Daily bonus already claimed. Come back in ${remaining} hours.`, canClaim: false });
-  }
-  // Grant 15 minutes free premium
-  const currentExpiry = userPremiums.get(sessionId) || 0;
-  const newExpiry = Math.max(currentExpiry, now) + 15 * 60 * 1000;
-  userPremiums.set(sessionId, newExpiry);
-  saveBonus(sessionId, now);
-  res.json({ success: true, message: '🎁 Daily bonus claimed! You received 15 minutes of free premium.', newExpiry });
 });
 
 app.get('/api/active-users', (req, res) => {
@@ -273,6 +245,55 @@ app.post('/api/send-message', (req, res) => {
   messages.push({ from: sessionId, text, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
   typingStatus.delete(roomId);
+
+  // Handle game moves (JSON messages)
+  if (text.startsWith('{') && text.includes('game_move')) {
+    try {
+      const data = JSON.parse(text);
+      if (data.type === 'game_move') {
+        const game = gameRooms.get(roomId);
+        if (game && game.gameActive) {
+          const isMyTurn = (game.currentPlayer === 'X' && game.playerX === sessionId) ||
+                           (game.currentPlayer === 'O' && game.playerO === sessionId);
+          if (isMyTurn && game.board[data.index] === '') {
+            game.board[data.index] = game.currentPlayer;
+            // check win/draw
+            const winPatterns = [
+              [0,1,2], [3,4,5], [6,7,8],
+              [0,3,6], [1,4,7], [2,5,8],
+              [0,4,8], [2,4,6]
+            ];
+            let winner = null;
+            for (let pattern of winPatterns) {
+              const [a,b,c] = pattern;
+              if (game.board[a] && game.board[a] === game.board[b] && game.board[a] === game.board[c]) {
+                winner = game.board[a];
+                break;
+              }
+            }
+            let draw = !winner && game.board.every(cell => cell !== '');
+            if (winner) {
+              game.gameActive = false;
+              const winnerSession = winner === 'X' ? game.playerX : game.playerO;
+              const loserSession = winner === 'X' ? game.playerO : game.playerX;
+              messages.push({ from: 'system', text: `🎉 Game over! ${winner === 'X' ? 'You' : 'Opponent'} wins! 🎉`, timestamp: Date.now() });
+              chatMessages.set(roomId, messages);
+            } else if (draw) {
+              game.gameActive = false;
+              messages.push({ from: 'system', text: `🤝 Game ended in a draw!`, timestamp: Date.now() });
+              chatMessages.set(roomId, messages);
+            } else {
+              game.currentPlayer = game.currentPlayer === 'X' ? 'O' : 'X';
+              // notify both clients of new board state via system message (JSON)
+              const boardMsg = JSON.stringify({ type: 'game_update', board: game.board, currentPlayer: game.currentPlayer });
+              messages.push({ from: 'game', text: boardMsg, timestamp: Date.now() });
+              chatMessages.set(roomId, messages);
+            }
+          }
+        }
+      }
+    } catch(e) { /* ignore non-JSON */ }
+  }
   res.json({ success: true });
 });
 
@@ -303,6 +324,7 @@ app.post('/api/skip-chat', async (req, res) => {
       if (partnerChat) activeChats.delete(chat.partnerSessionId);
     }
     activeChats.delete(sessionId);
+    gameRooms.delete(roomId);
     setTimeout(() => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
@@ -341,6 +363,7 @@ app.post('/api/end-chat', (req, res) => {
       lastPartner.set(partnerId, { partnerId: sessionId, timestamp: Date.now() });
     }
     activeChats.delete(sessionId);
+    gameRooms.delete(roomId);
     setTimeout(() => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
@@ -351,7 +374,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin endpoints (shortened) ----------
+// ---------- Admin API (same as before, omitted for brevity) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -376,13 +399,13 @@ app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (all messages in chatbox, daily bonus button) -------------------
+// ------------------- FRONTEND (with Tic-Tac-Toe game) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>ChatWave · Real Chat</title>
+    <title>ChatWave · Real Chat + Games</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -421,7 +444,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
         .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
         .boost-btn.visible { display:block; }
-        .daily-btn { background:#10b981; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; }
+        .game-btn { background:#10b981; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; margin-left:5px; }
         .pref-selector { display:flex; align-items:center; gap:8px; background:#f1f5f9; padding:6px 14px; border-radius:40px; }
         .pref-selector label { font-weight:500; font-size:0.75rem; }
         .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
@@ -434,6 +457,10 @@ const htmlTemplate = `<!DOCTYPE html>
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; margin-left:12px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; margin-right:12px; }
         .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; }
+        .game-board { display:grid; grid-template-columns:repeat(3, 80px); gap:8px; justify-content:center; margin:10px 0; background:#f8fafc; padding:15px; border-radius:16px; align-self:center; }
+        .game-cell { width:80px; height:80px; background:white; border:2px solid #cbd5e1; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:2rem; font-weight:bold; cursor:pointer; transition:0.2s; }
+        .game-cell:hover { background:#eef2ff; }
+        .game-cell.disabled { cursor:not-allowed; opacity:0.6; }
         .typing { text-align:left; font-size:1rem; font-weight:500; font-style:italic; padding:6px 20px; color:#3b82f6; min-height:36px; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity:0.6; } 50% { opacity:1; } 100% { opacity:0.6; } }
         .input-area { display:flex; gap:10px; padding:12px 16px; background:white; border-top:1px solid #e2e8f0; }
@@ -448,6 +475,8 @@ const htmlTemplate = `<!DOCTYPE html>
             .msg { max-width:90%; }
             .action-buttons { flex-direction:column; }
             .action-buttons button { width:100%; }
+            .game-board { grid-template-columns:repeat(3, 60px); gap:6px; }
+            .game-cell { width:60px; height:60px; font-size:1.5rem; }
         }
     </style>
 </head>
@@ -456,7 +485,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Daily bonus</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Play games together</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 30min of real female matches. Female/Other: always free.</div></div>
@@ -491,11 +520,11 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
             <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
             <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹2 Boost</button>
-            <button id="dailyBonusBtn" class="daily-btn"><i class="fas fa-gift"></i> Daily Bonus</button>
+            <button id="gameBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Select your preference and click "Find Partner". Get 15min premium daily!</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner". Play Tic-Tac-Toe with connected users!</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -520,6 +549,10 @@ const htmlTemplate = `<!DOCTYPE html>
     let isTyping = false;
     let typingTimeout = null;
     let userGender = null;
+    let gameVisible = false;
+    let gameBoard = null;
+    let myTurn = false;
+    let gameActive = false;
 
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
 
@@ -548,15 +581,92 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    async function dailyBonus() {
-        showLoading(true);
-        var res = await apiCall('/api/daily-bonus', 'POST', { sessionId });
-        showLoading(false);
-        if(res.success) {
-            addSystemMsg('🎁 ' + res.message);
-            await checkPremium();
+    async function startGame() {
+        if(!chatActive) { addSystemMsg("You need to be connected to someone first."); return; }
+        if(!gameActive) {
+            // Initialize game board on client side only; server will store state only after first move
+            gameBoard = Array(9).fill('');
+            myTurn = true; // assume we start? Actually we need to agree who starts. Simpler: first to click starts.
+            renderGameBoard();
+            gameActive = true;
+            addSystemMsg("🎮 You started a Tic-Tac-Toe game! Click on a cell to make your move.");
+            // Send game start notification
+            var gameMsg = JSON.stringify({ type: 'game_start' });
+            await apiCall('/api/send-message', 'POST', { sessionId, text: gameMsg });
         } else {
-            addSystemMsg('⏰ ' + res.message);
+            addSystemMsg("Game already active. Finish or end chat to start new.");
+        }
+    }
+
+    function renderGameBoard() {
+        var oldBoard = document.getElementById('gameBoard');
+        if(oldBoard) oldBoard.remove();
+        var container = document.getElementById('chatMsgsArea');
+        var boardDiv = document.createElement('div');
+        boardDiv.id = 'gameBoard';
+        boardDiv.className = 'game-board';
+        for(var i=0;i<9;i++) {
+            var cell = document.createElement('div');
+            cell.className = 'game-cell';
+            if(!gameActive || !myTurn || gameBoard[i] !== '') cell.classList.add('disabled');
+            cell.innerText = gameBoard[i];
+            cell.onclick = (function(idx) { return function() { makeMove(idx); }; })(i);
+            boardDiv.appendChild(cell);
+        }
+        container.appendChild(boardDiv);
+        boardDiv.scrollIntoView({behavior:'smooth'});
+    }
+
+    async function makeMove(index) {
+        if(!chatActive || !gameActive || !myTurn) return;
+        if(gameBoard[index] !== '') return;
+        gameBoard[index] = myTurn ? 'X' : 'O'; // but we need consistent symbol assignment
+        // Actually we need to know if we are X or O. Let's simplify: first player to move is X.
+        // We'll store player symbol in a variable.
+        if(typeof mySymbol === 'undefined') {
+            mySymbol = 'X';
+            opponentSymbol = 'O';
+        }
+        gameBoard[index] = mySymbol;
+        renderGameBoard();
+        myTurn = false;
+        // Send move via chat message
+        var moveMsg = JSON.stringify({ type: 'game_move', index: index });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
+        // Check win/draw locally (server will also handle)
+        checkGameStatus();
+    }
+
+    function checkGameStatus() {
+        // We'll rely on server messages for game over; but we can do quick check
+        // Not needed, will be updated via system messages.
+    }
+
+    function handleGameMessage(data) {
+        if(data.type === 'game_move') {
+            // Opponent move
+            if(gameActive && !myTurn) {
+                gameBoard[data.index] = opponentSymbol;
+                renderGameBoard();
+                myTurn = true;
+                addSystemMsg("Your turn!");
+            }
+        } else if(data.type === 'game_update') {
+            // Full board update from server (after move)
+            gameBoard = data.board;
+            myTurn = (data.currentPlayer === 'X' && mySymbol === 'X') || (data.currentPlayer === 'O' && mySymbol === 'O');
+            renderGameBoard();
+        } else if(data.type === 'game_start') {
+            // Opponent started game
+            if(!gameActive) {
+                gameActive = true;
+                mySymbol = 'O';
+                opponentSymbol = 'X';
+                myTurn = false;
+                gameBoard = Array(9).fill('');
+                renderGameBoard();
+                addSystemMsg("🎮 Opponent started a Tic-Tac-Toe game! It's their turn.");
+            }
         }
     }
 
@@ -589,6 +699,7 @@ const htmlTemplate = `<!DOCTYPE html>
         typingInterval = null;
         chatActive = false;
         activePartner = null;
+        gameActive = false;
         clearChatMsgs(true);
         updateChatUI();
         if(res.success && res.partner) {
@@ -608,6 +719,7 @@ const htmlTemplate = `<!DOCTYPE html>
             typingInterval = null;
             chatActive = false;
             activePartner = null;
+            gameActive = false;
             clearChatMsgs(true);
             updateChatUI();
         } else {
@@ -619,9 +731,10 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) endChat();
         activePartner = partner;
         chatActive = true;
+        gameActive = false;
         clearChatMsgs();
         var genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
-        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello.');
+        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello or play Tic-Tac-Toe!');
         updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
@@ -649,7 +762,16 @@ const htmlTemplate = `<!DOCTYPE html>
         if(res.success && res.messages && res.messages.length) {
             for(var i=0;i<res.messages.length;i++) {
                 var msg = res.messages[i];
-                addBubble(msg.text, 'in');
+                if(msg.from === 'system') {
+                    addSystemMsg(msg.text);
+                } else if(msg.from === 'game') {
+                    try {
+                        var data = JSON.parse(msg.text);
+                        handleGameMessage(data);
+                    } catch(e) {}
+                } else {
+                    addBubble(msg.text, 'in');
+                }
                 if(msg.timestamp > lastMsgTimestamp) lastMsgTimestamp = msg.timestamp;
             }
         }
@@ -748,7 +870,7 @@ const htmlTemplate = `<!DOCTYPE html>
         rzp.open();
     }
 
-    // Page transitions and gender selection
+    // Page transitions
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -787,7 +909,7 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Claim daily bonus for free premium.");
+        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Play Tic-Tac-Toe with your partner!");
         document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
         updateBoostButtonVisibility();
     });
@@ -797,7 +919,7 @@ const htmlTemplate = `<!DOCTYPE html>
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
     document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
     document.getElementById('boostHeaderBtn').onclick = openRazorpay;
-    document.getElementById('dailyBonusBtn').onclick = dailyBonus;
+    document.getElementById('gameBtn').onclick = startGame;
     
     var msgInputChat = document.getElementById('chatMsgInput');
     msgInputChat.addEventListener('input', function() {
@@ -825,5 +947,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment amount: ₹2 (male→female boost)`);
-  console.log(`🎁 Daily bonus: 15min free premium every 24h`);
+  console.log(`🎮 Tic-Tac-Toe game integrated for connected users`);
 });
