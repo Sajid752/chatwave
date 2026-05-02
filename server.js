@@ -1,6 +1,6 @@
 // ==================== server.js ====================
 // Real users only. ₹2 boost for male→female (10 min premium).
-// Tic‑Tac‑Toe with request/accept flow and "Play Again" button (repeatable games).
+// Tic‑Tac‑Toe: request/accept flow + "Play Again" with partner confirmation.
 // Mobile layout: buttons side‑by‑side.
 
 const express = require('express');
@@ -150,7 +150,7 @@ function resetGame(roomId) {
   if (!game) return;
   game.board = Array(9).fill('');
   game.currentPlayer = 'X';
-  game.gameActive = false;
+  game.gameActive = true;   // will be set to true only after acceptance
   game.winner = null;
   game.requestPending = false;
   game.requestFrom = null;
@@ -176,14 +176,14 @@ function handleGameMove(roomId, sessionId, cellIndex) {
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: 'system', text: '🏆 You won the game! 🏆', timestamp: Date.now(), target: winnerSession });
     messages.push({ from: 'system', text: '😔 You lost. Better luck next time!', timestamp: Date.now(), target: loserSession });
-    // Add "Play Again" button system message for both users
-    messages.push({ from: 'system', text: '🔄 Click "Play Again" below to start a new game.', timestamp: Date.now(), actions: ['play_again'] });
+    // Add "Play Again" button for both users
+    messages.push({ from: 'system', text: '🔄 Click "Play Again" below to ask for a rematch.', timestamp: Date.now(), actions: ['play_again'] });
     chatMessages.set(roomId, messages);
   } else if (isDraw(game.board)) {
     game.gameActive = false;
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: 'system', text: '🤝 Game ended in a draw!', timestamp: Date.now() });
-    messages.push({ from: 'system', text: '🔄 Click "Play Again" below to start a new game.', timestamp: Date.now(), actions: ['play_again'] });
+    messages.push({ from: 'system', text: '🔄 Click "Play Again" below to ask for a rematch.', timestamp: Date.now(), actions: ['play_again'] });
     chatMessages.set(roomId, messages);
   } else {
     game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
@@ -347,15 +347,16 @@ app.post('/api/send-message', (req, res) => {
       } else if (data.type === 'game_move') {
         handleGameMove(roomId, sessionId, data.index);
       } else if (data.type === 'play_again') {
-        // Reset the game for both users and start a new game automatically
+        // User clicked "Play Again" – send a new game request to the partner
         const game = gameRooms.get(roomId);
-        if (game && !game.gameActive) {
-          resetGame(roomId);
-          // Send a new game request from the user who clicked "Play Again"
+        if (game && !game.gameActive && !game.requestPending) {
           game.requestPending = true;
           game.requestFrom = sessionId;
           const messages = chatMessages.get(roomId) || [];
-          messages.push({ from: 'system', text: '🎮 The other user wants to play again. Accept?', timestamp: Date.now(), target: chat.partnerSessionId, actions: ['accept_game', 'decline_game'] });
+          messages.push({ from: 'system', text: '🎮 The other user wants to play again. Accept? (Click Accept/Decline below)', timestamp: Date.now(), target: chat.partnerSessionId, actions: ['accept_game', 'decline_game'] });
+          chatMessages.set(roomId, messages);
+          // Also inform the requester that the request was sent
+          messages.push({ from: 'system', text: '✅ Rematch request sent. Waiting for partner...', timestamp: Date.now(), target: sessionId });
           chatMessages.set(roomId, messages);
         }
       }
@@ -369,7 +370,7 @@ app.post('/api/send-message', (req, res) => {
   res.json({ success: true });
 });
 
-// Other API routes (typing, get-messages, skip-chat, end-chat) remain unchanged
+// Remaining API routes (typing, get-messages, skip-chat, end-chat) unchanged
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -508,10 +509,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></tr></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`</table><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (with "Play Again" button support) -------------------
+// ------------------- FRONTEND (with proper "Play Again" request/accept) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -522,6 +523,7 @@ const htmlTemplate = `<!DOCTYPE html>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <style>
+        /* styles same as before – unchanged */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: 'Inter', sans-serif; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); min-height: 100vh; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
@@ -727,7 +729,7 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!chatActive) return;
         var msg = JSON.stringify({ type: 'play_again' });
         await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
-        addSystemMsg("🔄 Requesting a new game...");
+        addSystemMsg("🔄 Sending rematch request...");
     }
 
     async function makeMove(index) {
@@ -1111,5 +1113,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
-  console.log(`🎮 Tic-Tac-Toe: "Play Again" button lets users replay indefinitely.`);
+  console.log(`🎮 Tic-Tac-Toe: "Play Again" sends a rematch request to the partner.`);
 });
