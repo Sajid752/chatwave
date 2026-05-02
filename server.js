@@ -1,8 +1,7 @@
 // ==================== server.js ====================
 // Real users only. ₹2 boost for male→female (10 min premium).
-// Payment modal on demand (no separate boost button).
-// Tic‑Tac‑Toe with request/accept flow.
-// Mobile layout: buttons side‑by‑side, cleaned margins.
+// Tic‑Tac‑Toe with request/accept flow and "Play Again" button (repeatable games).
+// Mobile layout: buttons side‑by‑side.
 
 const express = require('express');
 const cors = require('cors');
@@ -37,20 +36,18 @@ function savePayment(payment) {
 }
 
 // ---------- In‑memory stores ----------
-const activeSessions = new Map();          // sessionId -> lastSeen
-const userPremiums = new Map();            // sessionId -> expiry timestamp (10 min)
-const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
-const waitingQueue = [];                   // sessionIds waiting for a partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
-const chatMessages = new Map();            // roomId -> array of messages
-const chatEnded = new Map();               // roomId -> boolean
-const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
-const typingStatus = new Map();            // roomId -> { userId, timestamp }
-const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
+const activeSessions = new Map();
+const userPremiums = new Map();
+const userGender = new Map();
+const waitingQueue = [];
+const activeChats = new Map();
+const chatMessages = new Map();
+const chatEnded = new Map();
+const userPreferredGender = new Map();
+const typingStatus = new Map();
+const lastPartner = new Map();
 let totalMatches = 0;
-
-// Game state per room
-const gameRooms = new Map(); // roomId -> { board, currentPlayer, playerX, playerO, gameActive, requestPending, requestFrom }
+const gameRooms = new Map();
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -148,6 +145,18 @@ function broadcastGameState(roomId) {
   chatMessages.set(roomId, messages);
 }
 
+function resetGame(roomId) {
+  const game = gameRooms.get(roomId);
+  if (!game) return;
+  game.board = Array(9).fill('');
+  game.currentPlayer = 'X';
+  game.gameActive = false;
+  game.winner = null;
+  game.requestPending = false;
+  game.requestFrom = null;
+  broadcastGameState(roomId);
+}
+
 function handleGameMove(roomId, sessionId, cellIndex) {
   const game = gameRooms.get(roomId);
   if (!game || !game.gameActive) return false;
@@ -167,11 +176,14 @@ function handleGameMove(roomId, sessionId, cellIndex) {
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: 'system', text: '🏆 You won the game! 🏆', timestamp: Date.now(), target: winnerSession });
     messages.push({ from: 'system', text: '😔 You lost. Better luck next time!', timestamp: Date.now(), target: loserSession });
+    // Add "Play Again" button system message for both users
+    messages.push({ from: 'system', text: '🔄 Click "Play Again" below to start a new game.', timestamp: Date.now(), actions: ['play_again'] });
     chatMessages.set(roomId, messages);
   } else if (isDraw(game.board)) {
     game.gameActive = false;
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: 'system', text: '🤝 Game ended in a draw!', timestamp: Date.now() });
+    messages.push({ from: 'system', text: '🔄 Click "Play Again" below to start a new game.', timestamp: Date.now(), actions: ['play_again'] });
     chatMessages.set(roomId, messages);
   } else {
     game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
@@ -199,7 +211,7 @@ app.post('/api/verify-payment', (req, res) => {
   const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   if (expectedSignature === razorpay_signature) {
     const currentExpiry = userPremiums.get(sessionId) || 0;
-    const newExpiry = Math.max(currentExpiry, Date.now()) + 10 * 60 * 1000; // 10 minutes premium
+    const newExpiry = Math.max(currentExpiry, Date.now()) + 10 * 60 * 1000;
     userPremiums.set(sessionId, newExpiry);
     const paymentRecord = {
       id: razorpay_payment_id,
@@ -316,6 +328,8 @@ app.post('/api/send-message', (req, res) => {
           game.gameActive = true;
           game.requestPending = false;
           game.requestFrom = null;
+          game.board = Array(9).fill('');
+          game.currentPlayer = 'X';
           const messages = chatMessages.get(roomId) || [];
           messages.push({ from: 'system', text: '🎮 Game accepted! The board will appear. X starts.', timestamp: Date.now() });
           chatMessages.set(roomId, messages);
@@ -332,6 +346,18 @@ app.post('/api/send-message', (req, res) => {
         }
       } else if (data.type === 'game_move') {
         handleGameMove(roomId, sessionId, data.index);
+      } else if (data.type === 'play_again') {
+        // Reset the game for both users and start a new game automatically
+        const game = gameRooms.get(roomId);
+        if (game && !game.gameActive) {
+          resetGame(roomId);
+          // Send a new game request from the user who clicked "Play Again"
+          game.requestPending = true;
+          game.requestFrom = sessionId;
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '🎮 The other user wants to play again. Accept?', timestamp: Date.now(), target: chat.partnerSessionId, actions: ['accept_game', 'decline_game'] });
+          chatMessages.set(roomId, messages);
+        }
       }
     } catch(e) {}
   } else {
@@ -343,14 +369,14 @@ app.post('/api/send-message', (req, res) => {
   res.json({ success: true });
 });
 
+// Other API routes (typing, get-messages, skip-chat, end-chat) remain unchanged
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
   if (!chat) return res.json({ success: false });
   const roomId = chat.roomId;
-  if (isTyping) {
-    typingStatus.set(roomId, { userId: sessionId, timestamp: Date.now() });
-  } else {
+  if (isTyping) typingStatus.set(roomId, { userId: sessionId, timestamp: Date.now() });
+  else {
     const current = typingStatus.get(roomId);
     if (current && current.userId === sessionId) typingStatus.delete(roomId);
   }
@@ -363,9 +389,7 @@ app.post('/api/get-typing', (req, res) => {
   if (!chat) return res.json({ isTyping: false });
   const roomId = chat.roomId;
   const typing = typingStatus.get(roomId);
-  if (typing && typing.userId !== sessionId && (Date.now() - typing.timestamp) < 2500) {
-    return res.json({ isTyping: true });
-  }
+  if (typing && typing.userId !== sessionId && (Date.now() - typing.timestamp) < 2500) return res.json({ isTyping: true });
   res.json({ isTyping: false });
 });
 
@@ -484,10 +508,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></tr></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`</table><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (with payment modal, no standalone boost button) -------------------
+// ------------------- FRONTEND (with "Play Again" button support) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -504,7 +528,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        /* Modal overlay for payment */
         .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:20000; visibility:hidden; opacity:0; transition:0.2s; }
         .modal-overlay.active { visibility:visible; opacity:1; }
         .payment-modal { background:white; border-radius:28px; max-width:340px; width:90%; padding:28px 24px; text-align:center; box-shadow:0 40px 60px rgba(0,0,0,0.3); }
@@ -544,7 +567,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .pref-selector label { font-weight:500; font-size:0.75rem; }
         .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
         .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; margin-left:8px; }
-        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
+        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; scroll-behavior:smooth; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 0; word-break:break-word; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; }
@@ -552,6 +575,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .action-buttons { display:flex; gap:6px; justify-content:center; margin-top:4px; }
         .action-btn { background:#2563eb; color:white; border:none; padding:4px 12px; border-radius:40px; cursor:pointer; font-size:0.7rem; }
         .action-btn.decline { background:#ef4444; }
+        .action-btn.play-again { background:#10b981; }
         .game-board { display:grid; grid-template-columns:repeat(3, 80px); gap:8px; justify-content:center; margin:10px 0; background:#f8fafc; padding:15px; border-radius:16px; align-self:center; }
         .game-cell { width:80px; height:80px; background:white; border:2px solid #cbd5e1; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:2rem; font-weight:bold; cursor:pointer; transition:0.2s; }
         .game-cell.active { cursor:pointer; background:#eef2ff; }
@@ -568,7 +592,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .main-action-btn.end { background:#ef4444; }
         @media (max-width:700px) {
             .msg { max-width:90%; }
-            .action-buttons-chat { flex-direction:row; } /* Keep side by side */
+            .action-buttons-chat { flex-direction:row; }
             .action-buttons-chat button { width:100%; }
             .game-board { grid-template-columns:repeat(3, 60px); gap:6px; }
             .game-cell { width:60px; height:60px; font-size:1.5rem; }
@@ -581,7 +605,6 @@ const htmlTemplate = `<!DOCTYPE html>
 <body>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-<!-- Payment Modal -->
 <div id="paymentModal" class="modal-overlay">
     <div class="payment-modal">
         <i class="fas fa-rupee-sign" style="font-size:2rem; color:#f59e0b;"></i>
@@ -664,7 +687,7 @@ const htmlTemplate = `<!DOCTYPE html>
     let gameActive = false;
     let gameBoardVisible = false;
     let mySymbol = null;
-    let pendingFindMatch = false; // to store that we are waiting for payment
+    let pendingFindMatch = false;
 
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
     function scrollToBottom() { var area = document.getElementById('chatMsgsArea'); area.scrollTop = area.scrollHeight; }
@@ -681,7 +704,6 @@ const htmlTemplate = `<!DOCTYPE html>
         hasPremium = res.hasPremium; 
         premiumExpiry = res.expiry; 
     }
-
     async function getActiveUsers() { var res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
     async function sendGameRequest() {
@@ -699,6 +721,13 @@ const htmlTemplate = `<!DOCTYPE html>
     async function declineGame() {
         var msg = JSON.stringify({ type: 'game_decline' });
         await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+    }
+
+    async function playAgain() {
+        if(!chatActive) return;
+        var msg = JSON.stringify({ type: 'play_again' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+        addSystemMsg("🔄 Requesting a new game...");
     }
 
     async function makeMove(index) {
@@ -748,12 +777,10 @@ const htmlTemplate = `<!DOCTYPE html>
     async function performFindMatch() {
         var prefer = document.getElementById('chatPreferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            // Show payment modal
             pendingFindMatch = true;
             document.getElementById('paymentModal').classList.add('active');
             return;
         }
-        // Proceed with matching
         if(chatActive) { endChat(); }
         showLoading(true);
         var res = await apiCall('/api/find-match', 'POST', {
@@ -779,7 +806,6 @@ const htmlTemplate = `<!DOCTYPE html>
             if(verifyRes.success){ 
                 addSystemMsg("✅ Payment successful! Premium activated for 10 minutes.");
                 await checkPremium(); 
-                // Close modal and retry find match
                 document.getElementById('paymentModal').classList.remove('active');
                 if(pendingFindMatch) {
                     pendingFindMatch = false;
@@ -795,15 +821,12 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function exitPaymentModal() {
         document.getElementById('paymentModal').classList.remove('active');
-        // Set preference to 'any' (Anyone)
         document.getElementById('chatPreferSelect').value = 'any';
         addSystemMsg("Preference changed to 'Anyone' because you declined payment.");
         pendingFindMatch = false;
     }
 
-    async function findMatch() {
-        performFindMatch();
-    }
+    async function findMatch() { performFindMatch(); }
 
     async function skipChat() {
         if(!chatActive) { addSystemMsg("No active chat to skip."); return; }
@@ -899,6 +922,20 @@ const htmlTemplate = `<!DOCTYPE html>
                         declineBtn.onclick = () => declineGame();
                         btnDiv.appendChild(acceptBtn);
                         btnDiv.appendChild(declineBtn);
+                        wrapper.appendChild(btnDiv);
+                        document.getElementById('chatMsgsArea').appendChild(wrapper);
+                        scrollToBottom();
+                    } else if(msg.actions && msg.actions.includes('play_again')) {
+                        var wrapper = document.createElement('div');
+                        wrapper.className = 'sys-msg';
+                        wrapper.innerHTML = '<i class="fas fa-info-circle"></i> ' + msg.text;
+                        var btnDiv = document.createElement('div');
+                        btnDiv.className = 'action-buttons';
+                        var playAgainBtn = document.createElement('button');
+                        playAgainBtn.innerText = 'Play Again';
+                        playAgainBtn.className = 'action-btn play-again';
+                        playAgainBtn.onclick = () => playAgain();
+                        btnDiv.appendChild(playAgainBtn);
                         wrapper.appendChild(btnDiv);
                         document.getElementById('chatMsgsArea').appendChild(wrapper);
                         scrollToBottom();
@@ -1073,6 +1110,6 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
-  console.log(`💰 Payment: ₹2 for 10 min female chat (modal only, no boost button)`);
-  console.log(`🎮 Tic-Tac-Toe with request/accept flow – mobile buttons side by side.`);
+  console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
+  console.log(`🎮 Tic-Tac-Toe: "Play Again" button lets users replay indefinitely.`);
 });
