@@ -1,23 +1,40 @@
 // ==================== server.js ====================
-// No bots – Only real users.
-// Male → Female requires ₹2 payment (30 min premium).
-// Clean UI, preference selector in header on desktop.
-// User gender shown in header.
+// Real users only. ₹2 payment for male→female.
+// Admin dashboard at /admin?key=YOUR_SECRET_KEY
+// Payments stored in payments.json
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || null;
+
 const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
 
 app.use(cors());
 app.use(express.json());
+
+// ---------- Persistent storage ----------
+const PAYMENTS_FILE = path.join(__dirname, 'payments.json');
+let payments = [];
+if (fs.existsSync(PAYMENTS_FILE)) {
+  try {
+    payments = JSON.parse(fs.readFileSync(PAYMENTS_FILE, 'utf8'));
+  } catch(e) { console.error('Error reading payments.json', e); }
+}
+
+function savePayment(payment) {
+  payments.push(payment);
+  fs.writeFileSync(PAYMENTS_FILE, JSON.stringify(payments, null, 2));
+}
 
 // ---------- In‑memory stores ----------
 const activeSessions = new Map();          // sessionId -> lastSeen
@@ -29,6 +46,7 @@ const chatMessages = new Map();            // roomId -> array of messages
 const chatEnded = new Map();               // roomId -> boolean
 const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
 const typingStatus = new Map();            // roomId -> { userId, timestamp }
+let totalMatches = 0;                      // simple counter for matches created
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -50,6 +68,7 @@ function tryMatchRealUsers() {
   activeChats.set(userB, { partnerSessionId: userA, roomId });
   chatMessages.set(roomId, []);
   chatEnded.set(roomId, false);
+  totalMatches++;
   return true;
 }
 
@@ -72,6 +91,17 @@ app.post('/api/verify-payment', (req, res) => {
   const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   if (expectedSignature === razorpay_signature) {
     userPremiums.set(sessionId, Date.now() + 30 * 60 * 1000);
+    // Save payment record
+    const paymentRecord = {
+      id: razorpay_payment_id,
+      orderId: razorpay_order_id,
+      amount: 2,
+      currency: 'INR',
+      sessionId,
+      timestamp: Date.now(),
+      date: new Date().toISOString()
+    };
+    savePayment(paymentRecord);
     res.json({ success: true, message: 'Premium activated' });
   } else {
     res.status(400).json({ success: false, message: 'Invalid signature' });
@@ -104,7 +134,6 @@ app.post('/api/find-match', (req, res) => {
     return res.json({ success: false, message: "You need to pay ₹2 to chat with females. Click the Boost button." });
   }
 
-  // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -120,7 +149,6 @@ app.post('/api/find-match', (req, res) => {
     }
   }
 
-  // Remove user from waiting queue if already there
   const existingIndex = waitingQueue.indexOf(sessionId);
   if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
   waitingQueue.push(sessionId);
@@ -141,6 +169,7 @@ app.post('/api/find-match', (req, res) => {
   return res.json({ success: false, message: "No real users online. Please try again later." });
 });
 
+// Typing and chat endpoints (unchanged from previous version)
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -253,7 +282,126 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (clean, gender in header, ₹2, preference inline on desktop) -------------------
+// ---------- Admin API endpoints (protected) ----------
+function adminAuth(req, res, next) {
+  const key = req.query.key;
+  if (!ADMIN_SECRET || key !== ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.get('/api/admin/stats', adminAuth, (req, res) => {
+  const now = Date.now();
+  const activeUsers = Array.from(activeSessions.values()).filter(t => now - t < 60000).length;
+  const totalRevenue = payments.reduce((sum, p) => sum + p.amount, 0);
+  const totalPayments = payments.length;
+  // Last 7 days payments
+  const last7Days = [];
+  for (let i = 6; i >= 0; i--) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    const dayStr = date.toISOString().split('T')[0];
+    const dayPayments = payments.filter(p => p.date.split('T')[0] === dayStr);
+    last7Days.push({
+      date: dayStr,
+      count: dayPayments.length,
+      amount: dayPayments.reduce((s, p) => s + p.amount, 0)
+    });
+  }
+  res.json({
+    success: true,
+    activeUsers,
+    totalMatches,
+    totalRevenue,
+    totalPayments,
+    last7Days,
+    recentPayments: payments.slice(-10).reverse()
+  });
+});
+
+// Admin dashboard HTML
+app.get('/admin', (req, res) => {
+  const key = req.query.key;
+  if (!ADMIN_SECRET || key !== ADMIN_SECRET) {
+    return res.status(401).send('Unauthorized. Provide ?key=YOUR_SECRET');
+  }
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatWave Admin Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: monospace; background: #f1f5f9; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h3 { margin: 0 0 8px 0; color: #475569; font-size: 0.9rem; }
+        .card .value { font-size: 2rem; font-weight: bold; color: #1e293b; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 16px; overflow: hidden; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; }
+        .chart-container { margin-top: 30px; background: white; padding: 20px; border-radius: 16px; }
+        canvas { max-height: 300px; }
+        .refresh { margin-bottom: 20px; }
+        button { background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 40px; cursor: pointer; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📊 ChatWave Admin Dashboard</h1>
+    <div class="refresh"><button onclick="loadData()">⟳ Refresh</button></div>
+    <div class="stats" id="stats"></div>
+    <div class="chart-container"><canvas id="dailyChart"></canvas></div>
+    <h3>📋 Recent Payments</h3>
+    <table id="paymentsTable">
+        <thead><tr><th>Payment ID</th><th>Amount</th><th>Date & Time</th><th>Session</th></tr></thead>
+        <tbody></tbody>
+    </table>
+</div>
+<script>
+    const API_BASE = '/api/admin/stats?key=${key}';
+    async function loadData() {
+        const res = await fetch(API_BASE);
+        const data = await res.json();
+        if (!data.success) return;
+        document.getElementById('stats').innerHTML = \`
+            <div class="card"><h3>👥 Active Users (5min)</h3><div class="value">\${data.activeUsers}</div></div>
+            <div class="card"><h3>💬 Total Matches</h3><div class="value">\${data.totalMatches}</div></div>
+            <div class="card"><h3>💰 Total Revenue (₹)</h3><div class="value">₹\${data.totalRevenue}</div></div>
+            <div class="card"><h3>💳 Total Payments</h3><div class="value">\${data.totalPayments}</div></div>
+        \`;
+        const tbody = document.querySelector('#paymentsTable tbody');
+        tbody.innerHTML = data.recentPayments.map(p => \`
+            <tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>
+        \`).join('');
+        // chart
+        const ctx = document.getElementById('dailyChart').getContext('2d');
+        if (window.dailyChart) window.dailyChart.destroy();
+        window.dailyChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: data.last7Days.map(d => d.date),
+                datasets: [{
+                    label: 'Payments (₹)',
+                    data: data.last7Days.map(d => d.amount),
+                    backgroundColor: '#3b82f6'
+                }]
+            }
+        });
+    }
+    loadData();
+    setInterval(loadData, 30000);
+</script>
+</body>
+</html>
+  `);
+});
+
+// ------------------- FRONTEND (same as previous, with ₹2 and gender display) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -633,7 +781,6 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
-        // Update header badge
         var displayGender = userGender === 'male' ? 'Male' : (userGender === 'female' ? 'Female' : 'Other');
         document.getElementById('userGenderBadge').innerText = displayGender;
         page1.style.display = 'none';
@@ -673,6 +820,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`💬 No bots – only real user matching.`);
-  console.log(`💰 Payment amount: ₹2 (male → female boost)`);
+  console.log(`📊 Admin dashboard at /admin?key=YOUR_ADMIN_SECRET`);
+  console.log(`💰 Payment amount: ₹2 (male→female boost)`);
 });
