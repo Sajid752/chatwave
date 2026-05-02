@@ -1,7 +1,6 @@
 // ==================== server.js ====================
-// Fully working first page with gender selection and terms.
-// No icons on gender, attractive design, all backend features intact.
-// Payment modal, multi‑game Tic‑Tac‑Toe, typing indicator, scroll to bottom.
+// Fully working first page – gender selection works, button enables.
+// All chat, game, payment features intact.
 
 const express = require('express');
 const cors = require('cors');
@@ -22,7 +21,7 @@ const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KE
 app.use(cors());
 app.use(express.json());
 
-// ---------- Persistent storage ----------
+// ---------- Persistent storage & in‑memory stores (same as before, unchanged) ----------
 const PAYMENTS_FILE = path.join(__dirname, 'payments.json');
 let payments = [];
 if (fs.existsSync(PAYMENTS_FILE)) {
@@ -35,36 +34,30 @@ function savePayment(payment) {
   fs.writeFileSync(PAYMENTS_FILE, JSON.stringify(payments, null, 2));
 }
 
-// ---------- In‑memory stores ----------
-const activeSessions = new Map();          // sessionId -> lastSeen
-const userPremiums = new Map();            // sessionId -> expiry timestamp (10 min)
-const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
-const waitingQueue = [];                   // sessionIds waiting for a partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
-const chatMessages = new Map();            // roomId -> array of messages
-const chatEnded = new Map();               // roomId -> boolean
-const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
-const typingStatus = new Map();            // roomId -> { userId, timestamp }
-const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
+const activeSessions = new Map();
+const userPremiums = new Map();
+const userGender = new Map();
+const waitingQueue = [];
+const activeChats = new Map();
+const chatMessages = new Map();
+const chatEnded = new Map();
+const userPreferredGender = new Map();
+const typingStatus = new Map();
+const lastPartner = new Map();
 let totalMatches = 0;
-
-// Game state per room
 const gameRooms = new Map();
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
   return expiry && expiry > Date.now();
 }
-
 function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
-
 function removeFromQueue(sessionId) {
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
 }
-
 function getActiveUserCount() {
   const now = Date.now();
   let count = 0;
@@ -73,20 +66,17 @@ function getActiveUserCount() {
   }
   return count;
 }
-
 function getRematchCooldown() {
   const active = getActiveUserCount();
   if (active > 20) return 120000;
   if (active >= 10) return 60000;
   return 30000;
 }
-
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
   const userB = waitingQueue.shift();
   if (!userA || !userB) return false;
-
   const cooldown = getRematchCooldown();
   const lastA = lastPartner.get(userA);
   const lastB = lastPartner.get(userB);
@@ -100,7 +90,6 @@ function tryMatchRealUsers() {
     waitingQueue.push(userB);
     return false;
   }
-
   const roomId = createRoomId();
   activeChats.set(userA, { partnerSessionId: userB, roomId });
   activeChats.set(userB, { partnerSessionId: userA, roomId });
@@ -110,43 +99,27 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ---------- Game helpers ----------
 function checkWinner(board) {
-  const winPatterns = [
-    [0,1,2], [3,4,5], [6,7,8],
-    [0,3,6], [1,4,7], [2,5,8],
-    [0,4,8], [2,4,6]
-  ];
+  const winPatterns = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
   for (let pattern of winPatterns) {
     const [a,b,c] = pattern;
-    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a];
-    }
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) return board[a];
   }
   return null;
 }
-
-function isDraw(board) {
-  return board.every(cell => cell !== '');
-}
-
+function isDraw(board) { return board.every(cell => cell !== ''); }
 function broadcastGameState(roomId) {
   const game = gameRooms.get(roomId);
   if (!game) return;
   const stateMessage = JSON.stringify({
-    type: 'game_state',
-    board: game.board,
-    currentPlayer: game.currentPlayer,
-    gameActive: game.gameActive,
-    winner: game.winner || null,
-    playerX: game.playerX,
-    playerO: game.playerO
+    type: 'game_state', board: game.board, currentPlayer: game.currentPlayer,
+    gameActive: game.gameActive, winner: game.winner || null,
+    playerX: game.playerX, playerO: game.playerO
   });
   const messages = chatMessages.get(roomId) || [];
   messages.push({ from: 'game', text: stateMessage, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
 }
-
 function resetGame(roomId) {
   const game = gameRooms.get(roomId);
   if (!game) return;
@@ -158,7 +131,6 @@ function resetGame(roomId) {
   game.requestFrom = null;
   broadcastGameState(roomId);
 }
-
 function handleGameMove(roomId, sessionId, cellIndex) {
   const game = gameRooms.get(roomId);
   if (!game || !game.gameActive) return false;
@@ -167,7 +139,6 @@ function handleGameMove(roomId, sessionId, cellIndex) {
   if (isPlayerX && game.currentPlayer !== 'X') return false;
   if (isPlayerO && game.currentPlayer !== 'O') return false;
   if (game.board[cellIndex] !== '') return false;
-
   game.board[cellIndex] = game.currentPlayer;
   const winner = checkWinner(game.board);
   if (winner) {
@@ -214,15 +185,7 @@ app.post('/api/verify-payment', (req, res) => {
     const currentExpiry = userPremiums.get(sessionId) || 0;
     const newExpiry = Math.max(currentExpiry, Date.now()) + 10 * 60 * 1000;
     userPremiums.set(sessionId, newExpiry);
-    const paymentRecord = {
-      id: razorpay_payment_id,
-      orderId: razorpay_order_id,
-      amount: 2,
-      currency: 'INR',
-      sessionId,
-      timestamp: Date.now(),
-      date: new Date().toISOString()
-    };
+    const paymentRecord = { id: razorpay_payment_id, orderId: razorpay_order_id, amount: 2, currency: 'INR', sessionId, timestamp: Date.now(), date: new Date().toISOString() };
     savePayment(paymentRecord);
     res.json({ success: true, message: 'Premium activated (10 min)', newExpiry });
   } else {
@@ -248,13 +211,11 @@ app.post('/api/find-match', (req, res) => {
   const { prefer, sessionId, userGender: gender } = req.body;
   userPreferredGender.set(sessionId, prefer);
   if (gender) userGender.set(sessionId, gender);
-
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
     return res.json({ success: false, message: "You need to pay ₹2 to chat with females. Click the Boost button." });
   }
-
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -265,17 +226,12 @@ app.post('/api/find-match', (req, res) => {
       const partnerId = existingChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
-      return res.json({
-        success: true,
-        partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
-      });
+      return res.json({ success: true, partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false } });
     }
   }
-
   removeFromQueue(sessionId);
   waitingQueue.push(sessionId);
   const matched = tryMatchRealUsers();
-
   if (matched) {
     const chat = activeChats.get(sessionId);
     if (chat && chat.partnerSessionId) {
@@ -283,23 +239,10 @@ app.post('/api/find-match', (req, res) => {
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
       const roomId = chat.roomId;
-      gameRooms.set(roomId, {
-        board: Array(9).fill(''),
-        currentPlayer: 'X',
-        playerX: sessionId,
-        playerO: partnerId,
-        gameActive: false,
-        winner: null,
-        requestPending: false,
-        requestFrom: null
-      });
-      return res.json({
-        success: true,
-        partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
-      });
+      gameRooms.set(roomId, { board: Array(9).fill(''), currentPlayer: 'X', playerX: sessionId, playerO: partnerId, gameActive: false, winner: null, requestPending: false, requestFrom: null });
+      return res.json({ success: true, partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false } });
     }
   }
-
   return res.json({ success: false, message: "No real users online. Please try again later." });
 });
 
@@ -309,7 +252,6 @@ app.post('/api/send-message', (req, res) => {
   if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
   const roomId = chat.roomId;
   if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
-
   if (text.startsWith('{') && text.includes('game_')) {
     try {
       const data = JSON.parse(text);
@@ -361,9 +303,8 @@ app.post('/api/typing', (req, res) => {
   const chat = activeChats.get(sessionId);
   if (!chat) return res.json({ success: false });
   const roomId = chat.roomId;
-  if (isTyping) {
-    typingStatus.set(roomId, { userId: sessionId, timestamp: Date.now() });
-  } else {
+  if (isTyping) typingStatus.set(roomId, { userId: sessionId, timestamp: Date.now() });
+  else {
     const current = typingStatus.get(roomId);
     if (current && current.userId === sessionId) typingStatus.delete(roomId);
   }
@@ -376,9 +317,7 @@ app.post('/api/get-typing', (req, res) => {
   if (!chat) return res.json({ isTyping: false });
   const roomId = chat.roomId;
   const typing = typingStatus.get(roomId);
-  if (typing && typing.userId !== sessionId && (Date.now() - typing.timestamp) < 2500) {
-    return res.json({ isTyping: true });
-  }
+  if (typing && typing.userId !== sessionId && (Date.now() - typing.timestamp) < 2500) return res.json({ isTyping: true });
   res.json({ isTyping: false });
 });
 
@@ -431,20 +370,8 @@ app.post('/api/skip-chat', async (req, res) => {
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
       const roomId = newChat.roomId;
-      gameRooms.set(roomId, {
-        board: Array(9).fill(''),
-        currentPlayer: 'X',
-        playerX: sessionId,
-        playerO: partnerId,
-        gameActive: false,
-        winner: null,
-        requestPending: false,
-        requestFrom: null
-      });
-      return res.json({
-        success: true,
-        partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
-      });
+      gameRooms.set(roomId, { board: Array(9).fill(''), currentPlayer: 'X', playerX: sessionId, playerO: partnerId, gameActive: false, winner: null, requestPending: false, requestFrom: null });
+      return res.json({ success: true, partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false } });
     }
   }
   res.json({ success: false, message: "No new partner right now. Try again." });
@@ -475,7 +402,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (shortened) ----------
+// Admin API (shortened)
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -500,7 +427,7 @@ app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (with fixed first page button) -------------------
+// ------------------- FRONTEND (fixed first page) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -541,13 +468,13 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-label { font-weight:600; display:block; margin-bottom:12px; color:#0f172a; font-size:1rem; }
         .gender-radio-group { display:flex; justify-content:center; gap:24px; flex-wrap:wrap; }
         .gender-radio-group label { display:flex; align-items:center; gap:8px; background:#f1f5f9; padding:8px 20px; border-radius:40px; cursor:pointer; transition:0.2s; border:1px solid #e2e8f0; font-weight:500; }
-        .gender-radio-group input { accent-color:#2563eb; width:18px; height:18px; margin:0; }
+        .gender-radio-group input { width:18px; height:18px; margin:0; cursor:pointer; }
         .gender-radio-group label:has(input:checked) { background:#2563eb; color:white; border-color:#2563eb; }
         .terms-check { margin:20px 0; display:flex; justify-content:center; align-items:center; gap:12px; }
-        .terms-check input { width:20px; height:20px; accent-color:#2563eb; }
+        .terms-check input { width:20px; height:20px; accent-color:#2563eb; cursor:pointer; }
         .enter-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:48px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; transition:0.2s; margin-top:16px; }
         .enter-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        /* Chat page (unchanged) */
+        /* Chat page styles (unchanged) */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
@@ -610,7 +537,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First page - redesigned -->
+<!-- First page - redesigned with robust radio handling -->
 <div id="page1" class="page">
     <div class="welcome-card">
         <div class="welcome-header">
@@ -629,7 +556,7 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
             <div class="gender-selection">
                 <div class="gender-label">I am a:</div>
-                <div class="gender-radio-group" id="genderGroup">
+                <div class="gender-radio-group">
                     <label><input type="radio" name="userGender" value="male"> Male</label>
                     <label><input type="radio" name="userGender" value="female"> Female</label>
                     <label><input type="radio" name="userGender" value="other"> Other</label>
@@ -645,7 +572,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Chat page -->
+<!-- Chat page (unchanged) -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo-area">
@@ -1016,7 +943,7 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    // First page logic (fixed)
+    // ---------- First page logic (REWRITTEN) ----------
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -1025,26 +952,37 @@ const htmlTemplate = `<!DOCTYPE html>
     var genderError = document.getElementById('genderError');
     var selectedGender = null;
 
-    function validateForm() {
-        var termsChecked = acceptCheck.checked;
-        if(selectedGender && termsChecked) { 
-            goBtn.disabled = false; 
-        } else { 
-            goBtn.disabled = true; 
+    function updateButtonState() {
+        if (selectedGender && acceptCheck.checked) {
+            goBtn.disabled = false;
+        } else {
+            goBtn.disabled = true;
         }
     }
-    genderRadios.forEach(radio => {
+
+    // Listen to radio button changes
+    genderRadios.forEach(function(radio) {
         radio.addEventListener('change', function() {
-            if(this.checked) selectedGender = this.value;
-            genderError.innerText = '';
-            validateForm();
+            if (this.checked) {
+                selectedGender = this.value;
+                genderError.innerText = '';
+                updateButtonState();
+            }
         });
     });
-    acceptCheck.addEventListener('change', validateForm);
+
+    // Listen to checkbox change
+    acceptCheck.addEventListener('change', updateButtonState);
+
+    // Initial state (nothing selected)
+    updateButtonState();
 
     goBtn.addEventListener('click', function() {
-        if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
-        if(!acceptCheck.checked) return;
+        if (!selectedGender) {
+            genderError.innerText = 'Please select your gender';
+            return;
+        }
+        if (!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
@@ -1053,10 +991,11 @@ const htmlTemplate = `<!DOCTYPE html>
         addSystemMsg(rulesText);
         checkPremium();
         getActiveUsers();
-        if(activePolling) clearInterval(activePolling);
+        if (activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
     });
 
+    // The rest of the chat‑page event bindings (same as before)
     document.getElementById('mainActionBtn').onclick = findMatch;
     document.getElementById('skipChatBtn').onclick = skipChat;
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
