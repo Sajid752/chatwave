@@ -1,7 +1,7 @@
 // ==================== server.js ====================
-// First page: from first file (simple gender + checkbox).
-// Second page: from second file (game request/accept, multi‑game, payment modal).
-// Admin dashboard: improved UI with charts and key metrics.
+// First page: gender selection (plain radios) + checkbox.
+// Second page: chat + Tic‑Tac‑Toe (request/accept, multi‑game) + payment modal (₹2 / 10 min).
+// Admin dashboard: modern UI with charts.
 
 const express = require('express');
 const cors = require('cors');
@@ -108,7 +108,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ---------- Game helpers (from second file – with reset) ----------
+// ---------- Game helpers (with reset) ----------
 function checkWinner(board) {
   const winPatterns = [
     [0,1,2], [3,4,5], [6,7,8],
@@ -191,7 +191,7 @@ function handleGameMove(roomId, sessionId, cellIndex) {
   return true;
 }
 
-// ---------- API routes (from second file) ----------
+// ---------- API routes ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -210,7 +210,7 @@ app.post('/api/verify-payment', (req, res) => {
   const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   if (expectedSignature === razorpay_signature) {
     const currentExpiry = userPremiums.get(sessionId) || 0;
-    const newExpiry = Math.max(currentExpiry, Date.now()) + 10 * 60 * 1000;
+    const newExpiry = Math.max(currentExpiry, Date.now()) + 10 * 60 * 1000; // 10 minutes premium
     userPremiums.set(sessionId, newExpiry);
     const paymentRecord = {
       id: razorpay_payment_id,
@@ -473,7 +473,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (improved professional dashboard) ----------
+// ---------- Admin API (improved dashboard) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -603,7 +603,7 @@ app.get('/admin', (req, res) => {
 </html>`);
 });
 
-// ------------------- FRONTEND (first page from first file, chat page from second file) -------------------
+// ------------------- FRONTEND (merged: first page from first file with plain radios, second page from second file) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -614,7 +614,6 @@ const htmlTemplate = `<!DOCTYPE html>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <style>
-        /* ========== Combined styles: first page from first file, chat from second file ========== */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: 'Inter', sans-serif; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); min-height: 100vh; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
@@ -630,7 +629,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#f59e0b; color:white; }
         .exit-modal { background:#e2e8f0; color:#1e293b; }
-        /* First page (from first file) */
+        /* First page (plain radios, fixed) */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -645,10 +644,8 @@ const htmlTemplate = `<!DOCTYPE html>
         .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
         .gender-selector { margin: 20px 0; text-align:left; }
         .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
-        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
-        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
-        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
-        .gender-option input { display:none; }
+        .gender-options { display:flex; gap:20px; justify-content:center; margin-top:10px; }
+        .gender-options label { display:flex; align-items:center; gap:6px; cursor:pointer; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
         /* Chat page (from second file) */
@@ -712,7 +709,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First page (from first file) -->
+<!-- First page (fixed: plain radio buttons) -->
 <div id="page1" class="page">
     <div class="terms-container">
         <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
@@ -723,11 +720,11 @@ const htmlTemplate = `<!DOCTYPE html>
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
                 <div class="gender-options">
-                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
-                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
-                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
+                    <label><input type="radio" name="userGender" value="male"> Male</label>
+                    <label><input type="radio" name="userGender" value="female"> Female</label>
+                    <label><input type="radio" name="userGender" value="other"> Other</label>
                 </div>
-                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
+                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:8px;"></div>
             </div>
             <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
             <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
@@ -1132,33 +1129,32 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    // First page logic (from first file, compatible with second file's chat)
+    // First page logic (plain radio buttons)
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
     var goBtn = document.getElementById('goToChatBtn');
-    var genderOptions = document.querySelectorAll('.gender-option');
+    var genderRadios = document.querySelectorAll('input[name="userGender"]');
     var genderError = document.getElementById('genderError');
     var selectedGender = null;
-
-    for(var i=0;i<genderOptions.length;i++) {
-        genderOptions[i].addEventListener('click', function() {
-            for(var j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
-            this.classList.add('selected');
-            var radio = this.querySelector('input');
-            radio.checked = true;
-            selectedGender = radio.value;
-            genderError.innerText = '';
-            validateForm();
-        });
-    }
 
     function validateForm() {
         var termsChecked = acceptCheck.checked;
         if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
     }
 
+    for(var i=0;i<genderRadios.length;i++) {
+        genderRadios[i].addEventListener('change', function() {
+            if(this.checked) {
+                selectedGender = this.value;
+                genderError.innerText = '';
+                validateForm();
+            }
+        });
+    }
+
     acceptCheck.addEventListener('change', validateForm);
+    validateForm();
 
     goBtn.addEventListener('click', function() {
         if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
