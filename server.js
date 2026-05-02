@@ -1,9 +1,8 @@
 // ==================== server.js ====================
 // Real users only. ₹2 boost for male→female.
-// Fixed re‑matching bug: users will not reconnect to the same person immediately.
-// Typing indicator: larger, italic, with subtle animation.
-// Engagement: Daily Lucky Spin (free premium minutes) – users can spin once every 12 hours.
-// Admin dashboard at /admin?key=YOUR_SECRET_KEY
+// All messages appear in chatbox (no toast popups).
+// Dynamic rematch cooldown based on active users.
+// Daily login bonus (15min premium every 24h).
 
 const express = require('express');
 const cors = require('cors');
@@ -32,22 +31,21 @@ if (fs.existsSync(PAYMENTS_FILE)) {
     payments = JSON.parse(fs.readFileSync(PAYMENTS_FILE, 'utf8'));
   } catch(e) { console.error('Error reading payments.json', e); }
 }
-
 function savePayment(payment) {
   payments.push(payment);
   fs.writeFileSync(PAYMENTS_FILE, JSON.stringify(payments, null, 2));
 }
 
-const SPINS_FILE = path.join(__dirname, 'spins.json');
-let spins = {};
-if (fs.existsSync(SPINS_FILE)) {
+const BONUS_FILE = path.join(__dirname, 'bonus.json');
+let bonuses = {};
+if (fs.existsSync(BONUS_FILE)) {
   try {
-    spins = JSON.parse(fs.readFileSync(SPINS_FILE, 'utf8'));
+    bonuses = JSON.parse(fs.readFileSync(BONUS_FILE, 'utf8'));
   } catch(e) {}
 }
-function saveSpin(sessionId, lastSpin, freePremiumExpiry) {
-  spins[sessionId] = { lastSpin, freePremiumExpiry };
-  fs.writeFileSync(SPINS_FILE, JSON.stringify(spins, null, 2));
+function saveBonus(sessionId, lastClaim) {
+  bonuses[sessionId] = lastClaim;
+  fs.writeFileSync(BONUS_FILE, JSON.stringify(bonuses, null, 2));
 }
 
 // ---------- In‑memory stores ----------
@@ -60,7 +58,7 @@ const chatMessages = new Map();            // roomId -> array of messages
 const chatEnded = new Map();               // roomId -> boolean
 const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
 const typingStatus = new Map();            // roomId -> { userId, timestamp }
-const lastPartner = new Map();             // sessionId -> { partnerId, timestamp } (to avoid immediate rematch)
+const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
 let totalMatches = 0;
 
 function isPremiumActive(sessionId) {
@@ -72,10 +70,26 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
-// Remove a user from waiting queue if present
 function removeFromQueue(sessionId) {
   const idx = waitingQueue.indexOf(sessionId);
   if (idx !== -1) waitingQueue.splice(idx, 1);
+}
+
+function getActiveUserCount() {
+  const now = Date.now();
+  let count = 0;
+  for (let [id, time] of activeSessions.entries()) {
+    if (now - time < 60000) count++;
+  }
+  return count;
+}
+
+// Dynamic cooldown based on active users
+function getRematchCooldown() {
+  const active = getActiveUserCount();
+  if (active > 20) return 120000;   // 2 minutes
+  if (active >= 10) return 60000;   // 1 minute
+  return 30000;                      // 30 seconds
 }
 
 // Match two real users from the waiting queue
@@ -85,16 +99,15 @@ function tryMatchRealUsers() {
   const userB = waitingQueue.shift();
   if (!userA || !userB) return false;
 
-  // Check if they recently chatted (to avoid immediate rematch)
+  const cooldown = getRematchCooldown();
   const lastA = lastPartner.get(userA);
   const lastB = lastPartner.get(userB);
-  if (lastA && lastA.partnerId === userB && (Date.now() - lastA.timestamp) < 60000) {
-    // They just ended chat within 60 seconds – put them back and try different
+  if (lastA && lastA.partnerId === userB && (Date.now() - lastA.timestamp) < cooldown) {
     waitingQueue.push(userA);
     waitingQueue.push(userB);
     return false;
   }
-  if (lastB && lastB.partnerId === userA && (Date.now() - lastB.timestamp) < 60000) {
+  if (lastB && lastB.partnerId === userA && (Date.now() - lastB.timestamp) < cooldown) {
     waitingQueue.push(userA);
     waitingQueue.push(userB);
     return false;
@@ -127,7 +140,9 @@ app.post('/api/verify-payment', (req, res) => {
   const body = razorpay_order_id + '|' + razorpay_payment_id;
   const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   if (expectedSignature === razorpay_signature) {
-    userPremiums.set(sessionId, Date.now() + 30 * 60 * 1000);
+    const currentExpiry = userPremiums.get(sessionId) || 0;
+    const newExpiry = Math.max(currentExpiry, Date.now()) + 30 * 60 * 1000;
+    userPremiums.set(sessionId, newExpiry);
     const paymentRecord = {
       id: razorpay_payment_id,
       orderId: razorpay_order_id,
@@ -138,7 +153,7 @@ app.post('/api/verify-payment', (req, res) => {
       date: new Date().toISOString()
     };
     savePayment(paymentRecord);
-    res.json({ success: true, message: 'Premium activated' });
+    res.json({ success: true, message: 'Premium activated', newExpiry });
   } else {
     res.status(400).json({ success: false, message: 'Invalid signature' });
   }
@@ -151,44 +166,27 @@ app.post('/api/check-premium', (req, res) => {
   res.json({ success: true, hasPremium, expiry });
 });
 
-app.post('/api/lucky-spin', (req, res) => {
+app.post('/api/daily-bonus', (req, res) => {
   const { sessionId } = req.body;
-  const spinData = spins[sessionId] || { lastSpin: 0, freePremiumExpiry: 0 };
+  const lastClaim = bonuses[sessionId] || 0;
   const now = Date.now();
-  const hoursSinceLastSpin = (now - spinData.lastSpin) / (1000 * 60 * 60);
-  if (spinData.lastSpin && hoursSinceLastSpin < 12) {
-    return res.json({ success: false, message: `Come back in ${Math.ceil(12 - hoursSinceLastSpin)} hours`, canSpin: false });
+  const hoursSince = (now - lastClaim) / (1000 * 60 * 60);
+  if (hoursSince < 24) {
+    const remaining = Math.ceil(24 - hoursSince);
+    return res.json({ success: false, message: `Daily bonus already claimed. Come back in ${remaining} hours.`, canClaim: false });
   }
-  // Random win: 10% chance to win 30 min premium, 30% chance 10 min, 60% nothing
-  const rand = Math.random();
-  let winMinutes = 0;
-  let message = '';
-  if (rand < 0.1) {
-    winMinutes = 30;
-    message = '🎉 Lucky you! You won 30 minutes of free premium! 🎉';
-  } else if (rand < 0.4) {
-    winMinutes = 10;
-    message = '🍀 Congratulations! You won 10 minutes of free premium! 🍀';
-  } else {
-    message = '😔 Better luck next time! Spin again after 12 hours.';
-  }
-  if (winMinutes > 0) {
-    const currentExpiry = userPremiums.get(sessionId) || 0;
-    const newExpiry = Math.max(currentExpiry, now) + winMinutes * 60 * 1000;
-    userPremiums.set(sessionId, newExpiry);
-    spinData.freePremiumExpiry = newExpiry;
-  }
-  spinData.lastSpin = now;
-  spins[sessionId] = spinData;
-  fs.writeFileSync(SPINS_FILE, JSON.stringify(spins, null, 2));
-  res.json({ success: true, winMinutes, message });
+  // Grant 15 minutes free premium
+  const currentExpiry = userPremiums.get(sessionId) || 0;
+  const newExpiry = Math.max(currentExpiry, now) + 15 * 60 * 1000;
+  userPremiums.set(sessionId, newExpiry);
+  saveBonus(sessionId, now);
+  res.json({ success: true, message: '🎁 Daily bonus claimed! You received 15 minutes of free premium.', newExpiry });
 });
 
 app.get('/api/active-users', (req, res) => {
   const sessionId = req.headers['x-session-id'];
   if (sessionId) activeSessions.set(sessionId, Date.now());
-  for (let [id, time] of activeSessions.entries()) if (Date.now() - time > 60000) activeSessions.delete(id);
-  const realCount = activeSessions.size;
+  const realCount = getActiveUserCount();
   res.json({ success: true, count: realCount });
 });
 
@@ -339,7 +337,6 @@ app.post('/api/end-chat', (req, res) => {
       const partnerId = chat.partnerSessionId;
       const partnerChat = activeChats.get(partnerId);
       if (partnerChat) activeChats.delete(partnerId);
-      // Record last partner for both sides to avoid immediate rematch
       lastPartner.set(sessionId, { partnerId, timestamp: Date.now() });
       lastPartner.set(partnerId, { partnerId: sessionId, timestamp: Date.now() });
     }
@@ -354,15 +351,14 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin endpoints (unchanged, shortened for brevity) ----------
+// ---------- Admin endpoints (shortened) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
   next();
 }
 app.get('/api/admin/stats', adminAuth, (req, res) => {
-  const now = Date.now();
-  const activeUsers = Array.from(activeSessions.values()).filter(t => now - t < 60000).length;
+  const activeUsers = getActiveUserCount();
   const totalRevenue = payments.reduce((sum, p) => sum + p.amount, 0);
   const totalPayments = payments.length;
   const last7Days = [];
@@ -380,7 +376,7 @@ app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (with bigger typing indicator and lucky spin button) -------------------
+// ------------------- FRONTEND (all messages in chatbox, daily bonus button) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -393,9 +389,6 @@ const htmlTemplate = `<!DOCTYPE html>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: 'Inter', sans-serif; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); min-height: 100vh; }
-        .toast-container { position:fixed; top:20px; right:20px; z-index:9999; display:flex; flex-direction:column; gap:10px; }
-        .toast { background:white; border-radius:12px; padding:12px 20px; box-shadow:0 10px 25px rgba(0,0,0,0.1); display:flex; align-items:center; gap:12px; border-left:4px solid #2563eb; }
-        .toast.success { border-left-color:#10b981; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
@@ -428,7 +421,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
         .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
         .boost-btn.visible { display:block; }
-        .spin-btn { background:#10b981; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; margin-left:5px; }
+        .daily-btn { background:#10b981; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; }
         .pref-selector { display:flex; align-items:center; gap:8px; background:#f1f5f9; padding:6px 14px; border-radius:40px; }
         .pref-selector label { font-weight:500; font-size:0.75rem; }
         .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
@@ -440,8 +433,8 @@ const htmlTemplate = `<!DOCTYPE html>
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 8px; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; margin-left:12px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; margin-right:12px; }
-        .sys-msg { text-align:center; font-size:0.7rem; color:#64748b; margin:8px 0; padding:0 12px; }
-        .typing { text-align:left; font-size:1rem; font-weight:500; font-style:italic; padding:6px 20px; color:#3b82f6; min-height:36px; letter-spacing:0.3px; animation:pulse 1.5s infinite; }
+        .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; }
+        .typing { text-align:left; font-size:1rem; font-weight:500; font-style:italic; padding:6px 20px; color:#3b82f6; min-height:36px; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity:0.6; } 50% { opacity:1; } 100% { opacity:0.6; } }
         .input-area { display:flex; gap:10px; padding:12px 16px; background:white; border-top:1px solid #e2e8f0; }
         .input-area input { flex:1; padding:12px 16px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; font-size:0.9rem; }
@@ -459,12 +452,11 @@ const htmlTemplate = `<!DOCTYPE html>
     </style>
 </head>
 <body>
-<div class="toast-container" id="toastContainer"></div>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Daily lucky spin</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Daily bonus</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 30min of real female matches. Female/Other: always free.</div></div>
@@ -499,11 +491,11 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
             <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
             <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹2 Boost</button>
-            <button id="spinBtn" class="spin-btn"><i class="fas fa-gift"></i> Lucky Spin</button>
+            <button id="dailyBonusBtn" class="daily-btn"><i class="fas fa-gift"></i> Daily Bonus</button>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Select your preference and click "Find Partner". Spin daily for free premium!</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner". Get 15min premium daily!</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -529,7 +521,6 @@ const htmlTemplate = `<!DOCTYPE html>
     let typingTimeout = null;
     let userGender = null;
 
-    function showToast(msg, type) { var c=document.getElementById('toastContainer'); var t=document.createElement('div'); t.className='toast '+type; t.innerHTML='<span>'+(type==='success'?'✅':type==='error'?'❌':'ℹ️')+'</span><span>'+msg+'</span>'; c.appendChild(t); setTimeout(()=>t.remove(),4000); }
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
 
     async function apiCall(endpoint, method, data) {
@@ -557,19 +548,15 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    async function luckySpin() {
+    async function dailyBonus() {
         showLoading(true);
-        var res = await apiCall('/api/lucky-spin', 'POST', { sessionId });
+        var res = await apiCall('/api/daily-bonus', 'POST', { sessionId });
         showLoading(false);
         if(res.success) {
-            if(res.winMinutes > 0) {
-                showToast(res.message, 'success');
-                await checkPremium();
-            } else {
-                showToast(res.message, 'info');
-            }
+            addSystemMsg('🎁 ' + res.message);
+            await checkPremium();
         } else {
-            showToast(res.message, 'warning');
+            addSystemMsg('⏰ ' + res.message);
         }
     }
 
@@ -577,7 +564,7 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) { endChat(); return; }
         var prefer = document.getElementById('chatPreferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            showToast("You need to pay ₹2 to chat with real females. Click the Boost button.", "warning");
+            addSystemMsg("⚠️ You need to pay ₹2 to chat with real females. Click the Boost button.");
             return;
         }
         showLoading(true);
@@ -655,9 +642,8 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!chatActive) return;
         var res = await apiCall('/api/get-messages', 'POST', { sessionId, lastTimestamp: lastMsgTimestamp });
         if(res.chatEnded) {
-            showToast("Your partner has left the chat.", "warning");
+            addSystemMsg("⚠️ Your partner has left the chat.");
             endChat();
-            addSystemMsg("Chat ended because your partner disconnected.");
             return;
         }
         if(res.success && res.messages && res.messages.length) {
@@ -695,14 +681,32 @@ const htmlTemplate = `<!DOCTYPE html>
         await sendTyping(false);
         var res = await apiCall('/api/send-message', 'POST', { sessionId, text });
         if(!res.success && res.message === 'Chat already ended') {
-            showToast("Chat already ended.", "error");
+            addSystemMsg("⚠️ Chat already ended.");
             endChat();
         }
     }
 
-    function addSystemMsg(t) { var area=document.getElementById('chatMsgsArea'); var div=document.createElement('div'); div.className='sys-msg'; div.innerHTML='<i class="fas fa-info-circle"></i> '+t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
-    function addBubble(t, type) { var area=document.getElementById('chatMsgsArea'); var div=document.createElement('div'); div.className='msg '+(type==='out'?'msg-out':'msg-in'); div.innerText=t; area.appendChild(div); div.scrollIntoView({behavior:'smooth'}); }
-    function clearChatMsgs(keepSys){ var area=document.getElementById('chatMsgsArea'); area.innerHTML=''; if(keepSys) addSystemMsg("Chat ended. Click 'Find Partner' to start a new conversation."); }
+    function addSystemMsg(t) { 
+        var area = document.getElementById('chatMsgsArea'); 
+        var div = document.createElement('div'); 
+        div.className = 'sys-msg'; 
+        div.innerHTML = '<i class="fas fa-info-circle"></i> ' + t; 
+        area.appendChild(div); 
+        div.scrollIntoView({behavior:'smooth'}); 
+    }
+    function addBubble(t, type) { 
+        var area = document.getElementById('chatMsgsArea'); 
+        var div = document.createElement('div'); 
+        div.className = 'msg ' + (type === 'out' ? 'msg-out' : 'msg-in'); 
+        div.innerText = t; 
+        area.appendChild(div); 
+        div.scrollIntoView({behavior:'smooth'}); 
+    }
+    function clearChatMsgs(keepSys){ 
+        var area = document.getElementById('chatMsgsArea'); 
+        area.innerHTML = ''; 
+        if(keepSys) addSystemMsg("Chat ended. Click 'Find Partner' to start a new conversation."); 
+    }
 
     function updateChatUI() {
         var mainBtn = document.getElementById('mainActionBtn');
@@ -722,18 +726,23 @@ const htmlTemplate = `<!DOCTYPE html>
     }
 
     async function openRazorpay() {
-        if(userGender !== 'male'){ showToast("Only male users can buy boost.",'warning'); return; }
-        if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ showToast("Premium already active.",'info'); return; }
+        if(userGender !== 'male'){ addSystemMsg("Only male users can buy boost."); return; }
+        if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ addSystemMsg("Premium already active."); return; }
         showLoading(true);
         var res = await apiCall('/api/create-order', 'POST', { amount: 2 });
         showLoading(false);
-        if(!res.success){ showToast("Failed to create order.",'error'); return; }
+        if(!res.success){ addSystemMsg("Failed to create order."); return; }
         var options = { key: res.key, amount: res.amount, currency: res.currency, name: "ChatWave", description: "Premium Boost (30 min)", order_id: res.orderId, handler: async function(response){
             showLoading(true);
             var verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId });
             showLoading(false);
-            if(verifyRes.success){ showToast("Payment successful! Premium activated.",'success'); await checkPremium(); updateBoostButtonVisibility(); }
-            else showToast("Payment verification failed.",'error');
+            if(verifyRes.success){ 
+                addSystemMsg("✅ Payment successful! Premium activated for 30 minutes.");
+                await checkPremium(); 
+                updateBoostButtonVisibility(); 
+            } else {
+                addSystemMsg("Payment verification failed.");
+            }
         }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
         var rzp = new Razorpay(options);
         rzp.open();
@@ -778,7 +787,7 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Click Lucky Spin for free premium!");
+        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Claim daily bonus for free premium.");
         document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
         updateBoostButtonVisibility();
     });
@@ -788,7 +797,7 @@ const htmlTemplate = `<!DOCTYPE html>
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
     document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
     document.getElementById('boostHeaderBtn').onclick = openRazorpay;
-    document.getElementById('spinBtn').onclick = luckySpin;
+    document.getElementById('dailyBonusBtn').onclick = dailyBonus;
     
     var msgInputChat = document.getElementById('chatMsgInput');
     msgInputChat.addEventListener('input', function() {
@@ -816,5 +825,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment amount: ₹2 (male→female boost)`);
-  console.log(`🎁 Lucky spin: users can win free premium every 12 hours.`);
+  console.log(`🎁 Daily bonus: 15min free premium every 24h`);
 });
