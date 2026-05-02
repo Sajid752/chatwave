@@ -1,9 +1,8 @@
 // ==================== server.js ====================
-// First page: rules + "I Agree" (no gender, no checkbox).
-// After agree: chat page opens + auto‑find partner.
-// Gender selector in chat header (for payment logic).
-// Tic‑Tac‑Toe: draw detection fixed.
-// Messages scroll to bottom automatically.
+// Original first page: gender + checkbox + "Enter ChatWave".
+// After entering, rules appear as system message in chat.
+// Payment modal for male→female (₹2 / 10 min).
+// Tic-Tac-Toe with draw detection. Messages scroll to bottom.
 
 const express = require('express');
 const cors = require('cors');
@@ -298,7 +297,6 @@ app.post('/api/send-message', (req, res) => {
   const roomId = chat.roomId;
   if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
 
-  // Handle game messages
   if (text.startsWith('{') && text.includes('game_')) {
     try {
       const data = JSON.parse(text);
@@ -336,7 +334,6 @@ app.post('/api/send-message', (req, res) => {
       }
     } catch(e) {}
   } else {
-    // Normal chat message
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: sessionId, text, timestamp: Date.now() });
     chatMessages.set(roomId, messages);
@@ -485,10 +482,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th><tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (new first page + auto‑find) -------------------
+// ------------------- FRONTEND (original first page, rules in chatbox) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -505,7 +502,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        /* Modal overlay for payment */
         .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:20000; visibility:hidden; opacity:0; transition:0.2s; }
         .modal-overlay.active { visibility:visible; opacity:1; }
         .payment-modal { background:white; border-radius:28px; max-width:340px; width:90%; padding:28px 24px; text-align:center; box-shadow:0 40px 60px rgba(0,0,0,0.3); }
@@ -515,14 +511,26 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#f59e0b; color:white; }
         .exit-modal { background:#e2e8f0; color:#1e293b; }
-        /* First page (rules + I Agree) */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
-        .rules-container { max-width:550px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); text-align:center; }
-        .rules-header { margin-bottom:20px; }
-        .rules-header h1 { font-size:2rem; color:#1e293b; margin-bottom:8px; }
-        .rules-list { text-align:left; margin:20px 0; padding-left:20px; }
-        .rules-list li { margin:12px 0; color:#334155; }
-        .agree-btn { width:100%; background:#10b981; border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:16px; }
+        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+        .terms-header { margin-bottom:24px; }
+        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
+        .terms-content { text-align:left; }
+        .rule-block { margin-bottom:24px; border-bottom:1px solid #eef2ff; padding-bottom:18px; }
+        .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+        .rule-title i { color:#2563eb; width:24px; }
+        .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
+        .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:16px; margin:20px 0; border:1px solid #e2e8f0; }
+        .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
+        .gender-selector { margin: 20px 0; text-align:left; }
+        .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
+        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
+        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
+        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
+        .gender-option input { display:none; }
+        .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
+        .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
@@ -571,7 +579,6 @@ const htmlTemplate = `<!DOCTYPE html>
 <body>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-<!-- Payment Modal -->
 <div id="paymentModal" class="modal-overlay">
     <div class="payment-modal">
         <i class="fas fa-rupee-sign" style="font-size:2rem; color:#f59e0b;"></i>
@@ -584,23 +591,26 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First page - Rules and I Agree -->
+<!-- First page (original: gender + checkbox) -->
 <div id="page1" class="page">
-    <div class="rules-container">
-        <div class="rules-header">
-            <h1><i class="fas fa-waveform"></i> ChatWave</h1>
-            <p>Talk to strangers!</p>
+    <div class="terms-container">
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
+        <div class="terms-content">
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 10min of real female matches. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
+            <div class="gender-selector">
+                <label><i class="fas fa-user"></i> I am a:</label>
+                <div class="gender-options">
+                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
+                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
+                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
+                </div>
+                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
+            </div>
+            <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
+            <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
         </div>
-        <div class="rules-list">
-            <ul>
-                <li>You must be at least 18 years old</li>
-                <li>No nudity, hate speech, or harassment</li>
-                <li>Do not ask for gender. This is not a dating site</li>
-                <li>Respect others and be kind</li>
-                <li>Violators will be banned</li>
-            </ul>
-        </div>
-        <button id="agreeBtn" class="agree-btn">I Agree</button>
     </div>
 </div>
 
@@ -633,7 +643,7 @@ const htmlTemplate = `<!DOCTYPE html>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Welcome! Click "Find Partner" to start chatting.</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner".</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -746,8 +756,8 @@ const htmlTemplate = `<!DOCTYPE html>
     async function performFindMatch() {
         var prefer = document.getElementById('chatPreferSelect').value;
         var myGenderVal = document.getElementById('myGenderSelect').value;
-        if(userGender === null) userGender = myGenderVal; // first time
-        if(userGender !== myGenderVal) userGender = myGenderVal; // update
+        if(userGender === null) userGender = myGenderVal;
+        if(userGender !== myGenderVal) userGender = myGenderVal;
 
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
             pendingFindMatch = true;
@@ -794,7 +804,6 @@ const htmlTemplate = `<!DOCTYPE html>
 
     function exitPaymentModal() {
         document.getElementById('paymentModal').classList.remove('active');
-        // Set preference to 'any' (Anyone)
         document.getElementById('chatPreferSelect').value = 'any';
         addSystemMsg("Preference changed to 'Anyone' because you declined payment.");
         pendingFindMatch = false;
@@ -997,20 +1006,49 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    // First page: I Agree button
-    document.getElementById('agreeBtn').addEventListener('click', function() {
-        document.getElementById('page1').style.display = 'none';
-        document.getElementById('page2').classList.add('active');
-        // Initialize user gender from dropdown
-        userGender = document.getElementById('myGenderSelect').value;
-        // Pre-fetch premium status and active users
+    // First page logic
+    var page1 = document.getElementById('page1');
+    var page2 = document.getElementById('page2');
+    var acceptCheck = document.getElementById('acceptTerms');
+    var goBtn = document.getElementById('goToChatBtn');
+    var genderOptions = document.querySelectorAll('.gender-option');
+    var genderError = document.getElementById('genderError');
+    var selectedGender = null;
+
+    for(var i=0;i<genderOptions.length;i++) {
+        genderOptions[i].addEventListener('click', function() {
+            for(var j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
+            this.classList.add('selected');
+            var radio = this.querySelector('input');
+            radio.checked = true;
+            selectedGender = radio.value;
+            genderError.innerText = '';
+            validateForm();
+        });
+    }
+
+    function validateForm() {
+        var termsChecked = acceptCheck.checked;
+        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
+    }
+
+    acceptCheck.addEventListener('change', validateForm);
+
+    goBtn.addEventListener('click', function() {
+        if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
+        if(!acceptCheck.checked) return;
+        userGender = selectedGender;
+        localStorage.setItem('userGender', userGender);
+        page1.style.display = 'none';
+        page2.classList.add('active');
+        // Show the welcome rules in chatbox
+        var rulesText = "Welcome to chatwave! Please read the rules below:\n• You must be at least 18 years old\n• No nudity, hate speech, or harassment\n• Do not ask for gender. This is not a dating site\n• Respect others and be kind\n• Violators will be banned";
+        addSystemMsg(rulesText);
         checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Welcome! Select your gender and preference, then click 'Find Partner'.");
-        // Auto start finding partner
-        performFindMatch();
+        // Optionally auto‑find? We'll let user click "Find Partner"
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -1050,5 +1088,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
-  console.log(`🎮 Tic-Tac-Toe draw fixed, first page rules only, auto‑find on agree.`);
+  console.log(`🎮 Tic-Tac-Toe draw fixed, rules appear in chatbox after entering.`);
 });
