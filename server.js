@@ -1,63 +1,33 @@
 // ==================== server.js ====================
-// Real Gemini AI with fallback only if key missing or error
-// Boost button next to active users
+// No bots – Only real users.
+// Male → Female requires ₹12 payment (30 min premium).
+// Clean UI, full‑screen chat.
 
 const express = require('express');
 const cors = require('cors');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
-// Try to load Gemini (will throw if not installed)
-let GoogleGenerativeAI;
-try {
-  const geminiModule = require('@google/generative-ai');
-  GoogleGenerativeAI = geminiModule.GoogleGenerativeAI;
-  console.log('✅ Gemini module loaded successfully.');
-} catch (err) {
-  console.error('❌ Failed to load @google/generative-ai:', err.message);
-}
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || 'rzp_test_SjkRHBxR35ls58';
 const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'nVBr3LEjVAtLM3MfdJrKx3KY';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
-
 const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
-
-let genAI = null;
-if (GoogleGenerativeAI && GEMINI_API_KEY) {
-  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  console.log('✅ Gemini AI is ACTIVE. Real AI replies will be generated.');
-} else {
-  if (!GoogleGenerativeAI) console.log('⚠️ Gemini module not installed. Install with: npm install @google/generative-ai');
-  if (!GEMINI_API_KEY) console.log('⚠️ GEMINI_API_KEY environment variable not set. Using fallback replies.');
-}
 
 app.use(cors());
 app.use(express.json());
 
 // ---------- In‑memory stores ----------
-const activeSessions = new Map();
-const userPremiums = new Map();
-const userGender = new Map();
-const waitingQueue = [];
-const activeChats = new Map();
-const chatMessages = new Map();
-const chatEnded = new Map();
-const userPreferredGender = new Map();
-const typingStatus = new Map();
-
-let nextBotId = 1000;
-const botProfiles = [
-  { name: 'Priya', gender: 'female', region: 'asia' },
-  { name: 'Rahul', gender: 'male', region: 'asia' },
-  { name: 'Neha', gender: 'female', region: 'asia' },
-  { name: 'Amit', gender: 'male', region: 'asia' },
-  { name: 'Simran', gender: 'female', region: 'asia' },
-  { name: 'Vikram', gender: 'male', region: 'asia' },
-];
+const activeSessions = new Map();          // sessionId -> lastSeen
+const userPremiums = new Map();            // sessionId -> expiry timestamp
+const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
+const waitingQueue = [];                   // sessionIds waiting for a partner
+const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
+const chatMessages = new Map();            // roomId -> array of messages
+const chatEnded = new Map();               // roomId -> boolean
+const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
+const typingStatus = new Map();            // roomId -> { userId, timestamp }
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -68,82 +38,21 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
+// Match two real users from the waiting queue
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
   const userB = waitingQueue.shift();
   if (!userA || !userB) return false;
   const roomId = createRoomId();
-  activeChats.set(userA, { partnerSessionId: userB, roomId, isBot: false });
-  activeChats.set(userB, { partnerSessionId: userA, roomId, isBot: false });
+  activeChats.set(userA, { partnerSessionId: userB, roomId });
+  activeChats.set(userB, { partnerSessionId: userA, roomId });
   chatMessages.set(roomId, []);
   chatEnded.set(roomId, false);
   return true;
 }
 
-// Intelligent fallback (still dynamic, not fully hardcoded)
-function fallbackReply(userMsg, botName) {
-  const lowerMsg = userMsg.toLowerCase();
-  // Dynamic responses based on keywords
-  if (lowerMsg.includes('hi') || lowerMsg.includes('hello') || lowerMsg.includes('namaste')) {
-    return "Namaste! Kaise ho? I'm doing great. 😊";
-  }
-  if (lowerMsg.includes('how are you') || lowerMsg.includes('how r you')) {
-    return "Main theek hoon! Aap sunao? 😄";
-  }
-  if (lowerMsg.includes('name') || lowerMsg.includes('tumhara naam')) {
-    return `Mera naam ${botName} hai. Aapka?`;
-  }
-  if (lowerMsg.includes('bye') || lowerMsg.includes('goodbye') || lowerMsg.includes('tata')) {
-    return "It was nice talking! Bye bye 👋";
-  }
-  if (lowerMsg.includes('love') || lowerMsg.includes('pyar')) {
-    return "Arre, let's just be good friends. 😊";
-  }
-  if (lowerMsg.includes('hate') || lowerMsg.includes('boring')) {
-    return "Sorry you feel that way. Let's change the topic?";
-  }
-  // More varied generic responses
-  const replies = [
-    "Haan haan, interesting! Batao aage?",
-    "That's cool! Mujhe bhi accha lagta hai.",
-    "Really? Waah! 😄",
-    "Hmm, I see your point. Tell me more.",
-    "Chalo, kuch aur baat karte hain?",
-    "Achha! Main bhi soch raha tha.",
-    "Wow, that's amazing!",
-    "Mujhe bhi yahi pasand hai.",
-    "Sahi kaha aapne!",
-    "Haha, same here!"
-  ];
-  return replies[Math.floor(Math.random() * replies.length)];
-}
-
-// Real AI using Gemini
-async function getAIReply(userMessage, botName, botGender, userGenderVal, conversationHistory) {
-  if (genAI) {
-    try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-      const chat = model.startChat({
-        history: conversationHistory.map(msg => ({
-          role: msg.role,
-          parts: [{ text: msg.text }]
-        }))
-      });
-      const result = await chat.sendMessage(userMessage);
-      const reply = result.response.text();
-      console.log(`🤖 Gemini reply to "${userMessage}": ${reply.substring(0, 50)}...`);
-      return reply;
-    } catch (err) {
-      console.error('Gemini error:', err);
-      return fallbackReply(userMessage, botName);
-    }
-  } else {
-    return fallbackReply(userMessage, botName);
-  }
-}
-
-// ---------- API routes (unchanged from working version) ----------
+// ---------- API routes ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -180,10 +89,10 @@ app.get('/api/active-users', (req, res) => {
   if (sessionId) activeSessions.set(sessionId, Date.now());
   for (let [id, time] of activeSessions.entries()) if (Date.now() - time > 60000) activeSessions.delete(id);
   const realCount = activeSessions.size;
-  res.json({ success: true, count: realCount + Math.floor(Math.random() * 30) + 50 });
+  res.json({ success: true, count: realCount });
 });
 
-app.post('/api/find-match', async (req, res) => {
+app.post('/api/find-match', (req, res) => {
   const { prefer, sessionId, userGender: gender } = req.body;
   userPreferredGender.set(sessionId, prefer);
   if (gender) userGender.set(sessionId, gender);
@@ -191,9 +100,10 @@ app.post('/api/find-match', async (req, res) => {
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
-    return res.json({ success: false, message: "You need to pay ₹12 to chat with real females. Click the Boost button." });
+    return res.json({ success: false, message: "You need to pay ₹12 to chat with females. Click the Boost button." });
   }
 
+  // If already in a chat, return that partner
   const existingChat = activeChats.get(sessionId);
   if (existingChat && existingChat.partnerSessionId) {
     const roomEnded = chatEnded.get(existingChat.roomId);
@@ -201,90 +111,33 @@ app.post('/api/find-match', async (req, res) => {
       activeChats.delete(sessionId);
     } else {
       const partnerId = existingChat.partnerSessionId;
-      if (existingChat.isBot) {
-        return res.json({
-          success: true,
-          partner: { name: existingChat.botName, gender: existingChat.botGender, region: 'world', id: partnerId, isBot: true }
-        });
-      } else {
-        const partnerPref = userPreferredGender.get(partnerId) || 'any';
-        return res.json({
-          success: true,
-          partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
-        });
-      }
+      const partnerPref = userPreferredGender.get(partnerId) || 'any';
+      return res.json({
+        success: true,
+        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+      });
     }
   }
 
-  const realUsersWaiting = waitingQueue.filter(id => !activeChats.get(id)?.isBot).length;
-  if (realUsersWaiting >= 1) {
-    const existingIndex = waitingQueue.indexOf(sessionId);
-    if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
-    waitingQueue.push(sessionId);
-    const matched = tryMatchRealUsers();
-    if (matched) {
-      const chat = activeChats.get(sessionId);
-      if (chat && !chat.isBot && chat.partnerSessionId) {
-        const partnerId = chat.partnerSessionId;
-        const partnerPref = userPreferredGender.get(partnerId) || 'any';
-        return res.json({
-          success: true,
-          partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
-        });
-      }
+  // Remove user from waiting queue if already there
+  const existingIndex = waitingQueue.indexOf(sessionId);
+  if (existingIndex !== -1) waitingQueue.splice(existingIndex, 1);
+  waitingQueue.push(sessionId);
+  const matched = tryMatchRealUsers();
+
+  if (matched) {
+    const chat = activeChats.get(sessionId);
+    if (chat && chat.partnerSessionId) {
+      const partnerId = chat.partnerSessionId;
+      const partnerPref = userPreferredGender.get(partnerId) || 'any';
+      return res.json({
+        success: true,
+        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+      });
     }
   }
 
-  // Fallback to AI bot
-  let candidates = botProfiles;
-  if (prefer !== 'any') {
-    candidates = botProfiles.filter(b => b.gender === prefer);
-    if (candidates.length === 0) candidates = botProfiles;
-  }
-  const botProfile = candidates[Math.floor(Math.random() * candidates.length)];
-  const botId = 'bot_' + nextBotId++;
-  const roomId = createRoomId();
-  activeChats.set(sessionId, { partnerSessionId: botId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
-  activeChats.set(botId, { partnerSessionId: sessionId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
-  chatMessages.set(roomId, []);
-  chatEnded.set(roomId, false);
-  if (!global.botChatHistory) global.botChatHistory = new Map();
-  global.botChatHistory.set(roomId, []);
-
-  res.json({
-    success: true,
-    partner: { name: botProfile.name, gender: botProfile.gender, region: botProfile.region, id: botId, isBot: true }
-  });
-});
-
-app.post('/api/send-message', async (req, res) => {
-  const { sessionId, text } = req.body;
-  const chat = activeChats.get(sessionId);
-  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
-  const roomId = chat.roomId;
-  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
-  const messages = chatMessages.get(roomId) || [];
-  messages.push({ from: sessionId, text, timestamp: Date.now() });
-  chatMessages.set(roomId, messages);
-
-  if (chat.isBot) {
-    const botId = chat.partnerSessionId;
-    const botChat = activeChats.get(botId);
-    if (botChat) {
-      if (!global.botChatHistory) global.botChatHistory = new Map();
-      let history = global.botChatHistory.get(roomId) || [];
-      const geminiHistory = history.map(msg => ({ role: msg.role, text: msg.text }));
-      geminiHistory.push({ role: 'user', text });
-      const userGenderVal = userGender.get(sessionId) || 'unknown';
-      const botReply = await getAIReply(text, botChat.botName, botChat.botGender, userGenderVal, geminiHistory);
-      history.push({ role: 'user', text });
-      history.push({ role: 'model', text: botReply });
-      global.botChatHistory.set(roomId, history);
-      messages.push({ from: botId, text: botReply, timestamp: Date.now() });
-      chatMessages.set(roomId, messages);
-    }
-  }
-  res.json({ success: true });
+  return res.json({ success: false, message: "No real users online. Please try again later." });
 });
 
 app.post('/api/typing', (req, res) => {
@@ -311,6 +164,19 @@ app.post('/api/get-typing', (req, res) => {
     return res.json({ isTyping: true });
   }
   res.json({ isTyping: false });
+});
+
+app.post('/api/send-message', (req, res) => {
+  const { sessionId, text } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
+  const roomId = chat.roomId;
+  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
+  const messages = chatMessages.get(roomId) || [];
+  messages.push({ from: sessionId, text, timestamp: Date.now() });
+  chatMessages.set(roomId, messages);
+  typingStatus.delete(roomId);
+  res.json({ success: true });
 });
 
 app.post('/api/get-messages', (req, res) => {
@@ -344,7 +210,6 @@ app.post('/api/skip-chat', async (req, res) => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
       typingStatus.delete(roomId);
-      if (global.botChatHistory) global.botChatHistory.delete(roomId);
     }, 60000);
   }
   const idx = waitingQueue.indexOf(sessionId);
@@ -353,7 +218,7 @@ app.post('/api/skip-chat', async (req, res) => {
   const matched = tryMatchRealUsers();
   if (matched) {
     const newChat = activeChats.get(sessionId);
-    if (newChat && newChat.partnerSessionId && !newChat.isBot) {
+    if (newChat && newChat.partnerSessionId) {
       const partnerId = newChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       return res.json({
@@ -362,25 +227,7 @@ app.post('/api/skip-chat', async (req, res) => {
       });
     }
   }
-  const prefer = userPreferredGender.get(sessionId) || 'any';
-  let candidates = botProfiles;
-  if (prefer !== 'any') {
-    candidates = botProfiles.filter(b => b.gender === prefer);
-    if (candidates.length === 0) candidates = botProfiles;
-  }
-  const botProfile = candidates[Math.floor(Math.random() * candidates.length)];
-  const botId = 'bot_' + nextBotId++;
-  const roomId = createRoomId();
-  activeChats.set(sessionId, { partnerSessionId: botId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
-  activeChats.set(botId, { partnerSessionId: sessionId, roomId, isBot: true, botName: botProfile.name, botGender: botProfile.gender });
-  chatMessages.set(roomId, []);
-  chatEnded.set(roomId, false);
-  if (!global.botChatHistory) global.botChatHistory = new Map();
-  global.botChatHistory.set(roomId, []);
-  res.json({
-    success: true,
-    partner: { name: botProfile.name, gender: botProfile.gender, region: botProfile.region, id: botId, isBot: true }
-  });
+  res.json({ success: false, message: "No new partner right now. Try again." });
 });
 
 app.post('/api/end-chat', (req, res) => {
@@ -398,7 +245,6 @@ app.post('/api/end-chat', (req, res) => {
       chatMessages.delete(roomId);
       chatEnded.delete(roomId);
       typingStatus.delete(roomId);
-      if (global.botChatHistory) global.botChatHistory.delete(roomId);
     }, 60000);
   }
   const idx = waitingQueue.indexOf(sessionId);
@@ -406,16 +252,13 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (same as previous with boost button) -------------------
-// (Copy the exact same frontend HTML from the previous working version that had the boost button)
-// For brevity, I'm assuming you have the full frontend from the last response. If not, I can resend.
-
+// ------------------- FRONTEND (clean UI, no bots) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>ChatWave · Real + AI Chat</title>
+    <title>ChatWave · Real Chat Only</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -429,8 +272,9 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
+        /* First page: full viewport, centered */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
-        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:0; box-shadow:none; animation:fadeIn 0.4s ease; text-align:center; }
+        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
         .terms-header { margin-bottom:24px; }
         .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
@@ -449,6 +293,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        /* Chat page: full screen chat */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
@@ -488,7 +333,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real + AI chat · English/Hinglish · ₹12</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · No bots</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% real female match. Female/Other: always free.</div></div>
@@ -512,7 +357,7 @@ const htmlTemplate = `<!DOCTYPE html>
     <div class="chat-header">
         <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
         <div class="header-actions">
-            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> active</div>
+            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
             <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹12 Boost</button>
         </div>
     </div>
@@ -526,7 +371,7 @@ const htmlTemplate = `<!DOCTYPE html>
         </select>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Real users + AI bots (English/Hinglish). Click Boost (₹12) to unlock real female matches.</div>
+        <div class="sys-msg">✨ Only real users – no bots. Select your preference and click "Find Partner".</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -640,7 +485,7 @@ const htmlTemplate = `<!DOCTYPE html>
         activePartner = partner;
         chatActive = true;
         clearChatMsgs();
-        addSystemMsg('✨ Connected with ' + partner.name + (partner.isBot ? ' (AI bot 🤖)' : ' (real user)'));
+        addSystemMsg('✨ Connected with a real person! Say hello.');
         updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
@@ -655,13 +500,6 @@ const htmlTemplate = `<!DOCTYPE html>
         var mainBtn = document.getElementById('mainActionBtn');
         mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat';
         mainBtn.classList.add('end');
-        if(partner.isBot) {
-            setTimeout(() => {
-                if(chatActive && activePartner && activePartner.id === partner.id) {
-                    addSystemMsg("🤖 AI bot is ready. Send a message in English or Hinglish!");
-                }
-            }, 1000);
-        }
     }
 
     async function pollMessages() {
@@ -791,7 +629,7 @@ const htmlTemplate = `<!DOCTYPE html>
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 AI bots are here! Male users: select 'Female' to see the Boost button (₹12) for real female matches.");
+        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹12) for real female matches.");
         document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
         updateBoostButtonVisibility();
     });
@@ -822,6 +660,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🤖 Real Gemini AI: ${genAI ? 'ACTIVE' : 'INACTIVE (check API key and module)'}`);
+  console.log(`🤖 No bots – only real user matching.`);
   console.log(`💰 Boost button appears for male users when they select "Female"`);
 });
