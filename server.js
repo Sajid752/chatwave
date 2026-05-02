@@ -1,8 +1,7 @@
 // ==================== server.js ====================
-// Real users only. ₹2 boost for male→female.
-// Dynamic rematch cooldown based on active users.
-// Tic‑Tac‑Toe game with full server‑side state synchronisation.
-// All messages appear in chatbox.
+// First page: from first file (simple gender + checkbox).
+// Second page: from second file (game request/accept, multi‑game, payment modal).
+// Admin dashboard: improved UI with charts and key metrics.
 
 const express = require('express');
 const cors = require('cors');
@@ -36,21 +35,19 @@ function savePayment(payment) {
   fs.writeFileSync(PAYMENTS_FILE, JSON.stringify(payments, null, 2));
 }
 
-// ---------- In‑memory stores ----------
-const activeSessions = new Map();          // sessionId -> lastSeen
-const userPremiums = new Map();            // sessionId -> expiry timestamp
-const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
-const waitingQueue = [];                   // sessionIds waiting for a partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
-const chatMessages = new Map();            // roomId -> array of messages
-const chatEnded = new Map();               // roomId -> boolean
-const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
-const typingStatus = new Map();            // roomId -> { userId, timestamp }
-const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
+// ---------- In‑memory stores (from second file – multi‑game) ----------
+const activeSessions = new Map();
+const userPremiums = new Map();
+const userGender = new Map();
+const waitingQueue = [];
+const activeChats = new Map();
+const chatMessages = new Map();
+const chatEnded = new Map();
+const userPreferredGender = new Map();
+const typingStatus = new Map();
+const lastPartner = new Map();
 let totalMatches = 0;
-
-// Game state per room
-const gameRooms = new Map(); // roomId -> { board: Array(9), currentPlayer: 'X' or 'O', playerX: sessionId, playerO: sessionId, gameActive: bool }
+const gameRooms = new Map();
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -77,9 +74,9 @@ function getActiveUserCount() {
 
 function getRematchCooldown() {
   const active = getActiveUserCount();
-  if (active > 20) return 120000;   // 2 minutes
-  if (active >= 10) return 60000;   // 1 minute
-  return 30000;                      // 30 seconds
+  if (active > 20) return 120000;
+  if (active >= 10) return 60000;
+  return 30000;
 }
 
 function tryMatchRealUsers() {
@@ -111,7 +108,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ---------- Game helpers ----------
+// ---------- Game helpers (from second file – with reset) ----------
 function checkWinner(board) {
   const winPatterns = [
     [0,1,2], [3,4,5], [6,7,8],
@@ -139,24 +136,36 @@ function broadcastGameState(roomId) {
     board: game.board,
     currentPlayer: game.currentPlayer,
     gameActive: game.gameActive,
-    winner: game.winner || null
+    winner: game.winner || null,
+    playerX: game.playerX,
+    playerO: game.playerO
   });
   const messages = chatMessages.get(roomId) || [];
   messages.push({ from: 'game', text: stateMessage, timestamp: Date.now() });
   chatMessages.set(roomId, messages);
 }
 
+function resetGame(roomId) {
+  const game = gameRooms.get(roomId);
+  if (!game) return;
+  game.board = Array(9).fill('');
+  game.currentPlayer = 'X';
+  game.gameActive = false;
+  game.winner = null;
+  game.requestPending = false;
+  game.requestFrom = null;
+  broadcastGameState(roomId);
+}
+
 function handleGameMove(roomId, sessionId, cellIndex) {
   const game = gameRooms.get(roomId);
   if (!game || !game.gameActive) return false;
-  // Determine if it's the player's turn
   const isPlayerX = (game.playerX === sessionId);
   const isPlayerO = (game.playerO === sessionId);
   if (isPlayerX && game.currentPlayer !== 'X') return false;
   if (isPlayerO && game.currentPlayer !== 'O') return false;
   if (game.board[cellIndex] !== '') return false;
 
-  // Make move
   game.board[cellIndex] = game.currentPlayer;
   const winner = checkWinner(game.board);
   if (winner) {
@@ -164,27 +173,25 @@ function handleGameMove(roomId, sessionId, cellIndex) {
     game.winner = winner;
     const winnerSession = (winner === 'X') ? game.playerX : game.playerO;
     const loserSession = (winner === 'X') ? game.playerO : game.playerX;
-    const winMsg = `🏆 You won the game! 🏆`;
-    const loseMsg = `😔 You lost. Better luck next time!`;
     const messages = chatMessages.get(roomId) || [];
-    messages.push({ from: 'system', text: winMsg, timestamp: Date.now(), target: winnerSession });
-    messages.push({ from: 'system', text: loseMsg, timestamp: Date.now(), target: loserSession });
+    messages.push({ from: 'system', text: '🏆 You won the game! 🏆', timestamp: Date.now(), target: winnerSession });
+    messages.push({ from: 'system', text: '😔 You lost. Better luck next time!', timestamp: Date.now(), target: loserSession });
     chatMessages.set(roomId, messages);
+    setTimeout(() => resetGame(roomId), 3000);
   } else if (isDraw(game.board)) {
     game.gameActive = false;
-    const drawMsg = `🤝 Game ended in a draw!`;
     const messages = chatMessages.get(roomId) || [];
-    messages.push({ from: 'system', text: drawMsg, timestamp: Date.now() });
+    messages.push({ from: 'system', text: '🤝 Game ended in a draw!', timestamp: Date.now() });
     chatMessages.set(roomId, messages);
+    setTimeout(() => resetGame(roomId), 3000);
   } else {
-    // Switch turn
     game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
   }
   broadcastGameState(roomId);
   return true;
 }
 
-// ---------- API routes ----------
+// ---------- API routes (from second file) ----------
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
@@ -203,7 +210,7 @@ app.post('/api/verify-payment', (req, res) => {
   const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   if (expectedSignature === razorpay_signature) {
     const currentExpiry = userPremiums.get(sessionId) || 0;
-    const newExpiry = Math.max(currentExpiry, Date.now()) + 30 * 60 * 1000;
+    const newExpiry = Math.max(currentExpiry, Date.now()) + 10 * 60 * 1000;
     userPremiums.set(sessionId, newExpiry);
     const paymentRecord = {
       id: razorpay_payment_id,
@@ -215,7 +222,7 @@ app.post('/api/verify-payment', (req, res) => {
       date: new Date().toISOString()
     };
     savePayment(paymentRecord);
-    res.json({ success: true, message: 'Premium activated', newExpiry });
+    res.json({ success: true, message: 'Premium activated (10 min)', newExpiry });
   } else {
     res.status(400).json({ success: false, message: 'Invalid signature' });
   }
@@ -273,15 +280,16 @@ app.post('/api/find-match', (req, res) => {
       const partnerId = chat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
-      // Initialize game room for the new pair
       const roomId = chat.roomId;
       gameRooms.set(roomId, {
         board: Array(9).fill(''),
         currentPlayer: 'X',
-        playerX: sessionId,   // first user in room is X
-        playerO: partnerId,   // second user is O
-        gameActive: true,
-        winner: null
+        playerX: sessionId,
+        playerO: partnerId,
+        gameActive: false,
+        winner: null,
+        requestPending: false,
+        requestFrom: null
       });
       return res.json({
         success: true,
@@ -291,6 +299,59 @@ app.post('/api/find-match', (req, res) => {
   }
 
   return res.json({ success: false, message: "No real users online. Please try again later." });
+});
+
+app.post('/api/send-message', (req, res) => {
+  const { sessionId, text } = req.body;
+  const chat = activeChats.get(sessionId);
+  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
+  const roomId = chat.roomId;
+  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
+
+  if (text.startsWith('{') && text.includes('game_')) {
+    try {
+      const data = JSON.parse(text);
+      if (data.type === 'game_request') {
+        const game = gameRooms.get(roomId);
+        if (game && !game.gameActive && !game.requestPending) {
+          game.requestPending = true;
+          game.requestFrom = sessionId;
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '🎮 The other user wants to play Tic‑Tac‑Toe. Accept? (Click Accept/Decline below)', timestamp: Date.now(), target: chat.partnerSessionId, actions: ['accept_game', 'decline_game'] });
+          chatMessages.set(roomId, messages);
+        }
+      } else if (data.type === 'game_accept') {
+        const game = gameRooms.get(roomId);
+        if (game && game.requestPending && game.requestFrom === chat.partnerSessionId) {
+          game.gameActive = true;
+          game.requestPending = false;
+          game.requestFrom = null;
+          game.board = Array(9).fill('');
+          game.currentPlayer = 'X';
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '🎮 Game accepted! The board will appear. X starts.', timestamp: Date.now() });
+          chatMessages.set(roomId, messages);
+          broadcastGameState(roomId);
+        }
+      } else if (data.type === 'game_decline') {
+        const game = gameRooms.get(roomId);
+        if (game && game.requestPending && game.requestFrom === chat.partnerSessionId) {
+          game.requestPending = false;
+          game.requestFrom = null;
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: '❌ The other user declined to play.', timestamp: Date.now(), target: game.requestFrom });
+          chatMessages.set(roomId, messages);
+        }
+      } else if (data.type === 'game_move') {
+        handleGameMove(roomId, sessionId, data.index);
+      }
+    } catch(e) {}
+  } else {
+    const messages = chatMessages.get(roomId) || [];
+    messages.push({ from: sessionId, text, timestamp: Date.now() });
+    chatMessages.set(roomId, messages);
+  }
+  res.json({ success: true });
 });
 
 app.post('/api/typing', (req, res) => {
@@ -319,35 +380,6 @@ app.post('/api/get-typing', (req, res) => {
   res.json({ isTyping: false });
 });
 
-app.post('/api/send-message', (req, res) => {
-  const { sessionId, text } = req.body;
-  const chat = activeChats.get(sessionId);
-  if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
-  const roomId = chat.roomId;
-  if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
-
-  // Handle game move messages (JSON)
-  if (text.startsWith('{') && text.includes('game_move')) {
-    try {
-      const data = JSON.parse(text);
-      if (data.type === 'game_move') {
-        const success = handleGameMove(roomId, sessionId, data.index);
-        if (!success) {
-          const messages = chatMessages.get(roomId) || [];
-          messages.push({ from: 'system', text: "❌ Invalid move or not your turn.", timestamp: Date.now(), target: sessionId });
-          chatMessages.set(roomId, messages);
-        }
-      }
-    } catch(e) { /* ignore */ }
-  } else {
-    // Normal chat message
-    const messages = chatMessages.get(roomId) || [];
-    messages.push({ from: sessionId, text, timestamp: Date.now() });
-    chatMessages.set(roomId, messages);
-  }
-  res.json({ success: true });
-});
-
 app.post('/api/get-messages', (req, res) => {
   const { sessionId, lastTimestamp } = req.body;
   const chat = activeChats.get(sessionId);
@@ -361,7 +393,6 @@ app.post('/api/get-messages', (req, res) => {
   }
   const messages = chatMessages.get(roomId) || [];
   const newMessages = messages.filter(m => m.timestamp > (lastTimestamp || 0));
-  // Filter messages meant for this user (target field)
   const filtered = newMessages.filter(m => {
     if (m.target && m.target !== sessionId) return false;
     if (m.from !== sessionId) return true;
@@ -403,8 +434,10 @@ app.post('/api/skip-chat', async (req, res) => {
         currentPlayer: 'X',
         playerX: sessionId,
         playerO: partnerId,
-        gameActive: true,
-        winner: null
+        gameActive: false,
+        winner: null,
+        requestPending: false,
+        requestFrom: null
       });
       return res.json({
         success: true,
@@ -440,7 +473,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (unchanged) ----------
+// ---------- Admin API (improved professional dashboard) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -462,10 +495,115 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatWave Admin Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f1f5f9; padding: 24px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { font-size: 1.8rem; font-weight: 600; color: #0f172a; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+        .subtitle { color: #475569; margin-bottom: 32px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 32px; }
+        .stat-card { background: white; border-radius: 24px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); transition: transform 0.2s; }
+        .stat-card:hover { transform: translateY(-2px); }
+        .stat-title { font-size: 0.875rem; font-weight: 500; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .stat-value { font-size: 2.5rem; font-weight: 700; color: #0f172a; }
+        .stat-unit { font-size: 1rem; font-weight: 500; color: #94a3b8; margin-left: 4px; }
+        .chart-card { background: white; border-radius: 24px; padding: 24px; margin-bottom: 32px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        .chart-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 20px; color: #1e293b; }
+        canvas { max-height: 300px; width: 100%; }
+        .table-container { background: white; border-radius: 24px; overflow: auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 16px 20px; background: #f8fafc; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0; }
+        td { padding: 12px 20px; border-bottom: 1px solid #f1f5f9; color: #1e293b; }
+        tr:hover { background: #f8fafc; }
+        .badge { background: #e2e8f0; color: #475569; border-radius: 40px; padding: 4px 12px; font-size: 0.75rem; font-weight: 500; }
+        .refresh-btn { background: #2563eb; color: white; border: none; padding: 10px 20px; border-radius: 40px; font-weight: 500; cursor: pointer; margin-bottom: 24px; transition: 0.2s; }
+        .refresh-btn:hover { background: #1d4ed8; }
+        footer { text-align: center; margin-top: 32px; color: #94a3b8; font-size: 0.75rem; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📊 ChatWave Dashboard</h1>
+    <div class="subtitle">Real‑time analytics & payment overview</div>
+    <button class="refresh-btn" onclick="loadData()">⟳ Refresh Data</button>
+    <div class="stats-grid" id="statsGrid"></div>
+    <div class="chart-card">
+        <div class="chart-title">📈 Daily Payments (last 7 days)</div>
+        <canvas id="dailyChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-title">💳 Recent Transactions</div>
+        <div class="table-container">
+            <table id="paymentsTable">
+                <thead><tr><th>Payment ID</th><th>Amount</th><th>Date & Time</th><th>Session</th><th>Status</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    <footer>© ChatWave — secure, anonymous chat platform</footer>
+</div>
+<script>
+    const API_BASE = '/api/admin/stats?key=${key}';
+    async function loadData() {
+        try {
+            const res = await fetch(API_BASE);
+            const data = await res.json();
+            if (!data.success) return;
+            document.getElementById('statsGrid').innerHTML = \`
+                <div class="stat-card"><div class="stat-title">👥 Active Users</div><div class="stat-value">\${data.activeUsers}<span class="stat-unit"></span></div></div>
+                <div class="stat-card"><div class="stat-title">💬 Total Matches</div><div class="stat-value">\${data.totalMatches}<span class="stat-unit"></span></div></div>
+                <div class="stat-card"><div class="stat-title">💰 Total Revenue</div><div class="stat-value">₹\${data.totalRevenue}<span class="stat-unit"></span></div></div>
+                <div class="stat-card"><div class="stat-title">💳 Payments</div><div class="stat-value">\${data.totalPayments}<span class="stat-unit"></span></div></div>
+            \`;
+            const tbody = document.querySelector('#paymentsTable tbody');
+            tbody.innerHTML = data.recentPayments.map(p => \`
+                <tr>
+                    <td><span class="badge">\${p.id.substring(0, 12)}...</span></td>
+                    <td><strong>₹\${p.amount}</strong></td>
+                    <td>\${new Date(p.timestamp).toLocaleString()}</td>
+                    <td>\${p.sessionId.substring(0, 12)}...</td>
+                    <td><span style="color:#10b981;">✓ Completed</span></td>
+                </tr>
+            \`).join('');
+            const ctx = document.getElementById('dailyChart').getContext('2d');
+            if (window.dailyChart) window.dailyChart.destroy();
+            window.dailyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.last7Days.map(d => d.date),
+                    datasets: [{
+                        label: 'Amount (₹)',
+                        data: data.last7Days.map(d => d.amount),
+                        backgroundColor: '#3b82f6',
+                        borderRadius: 8,
+                        barPercentage: 0.6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { position: 'top' }
+                    }
+                }
+            });
+        } catch(e) { console.error(e); }
+    }
+    loadData();
+    setInterval(loadData, 30000);
+</script>
+</body>
+</html>`);
 });
 
-// ------------------- FRONTEND (improved game UI) -------------------
+// ------------------- FRONTEND (first page from first file, chat page from second file) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -476,12 +614,23 @@ const htmlTemplate = `<!DOCTYPE html>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <style>
+        /* ========== Combined styles: first page from first file, chat from second file ========== */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: 'Inter', sans-serif; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); min-height: 100vh; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
+        .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:20000; visibility:hidden; opacity:0; transition:0.2s; }
+        .modal-overlay.active { visibility:visible; opacity:1; }
+        .payment-modal { background:white; border-radius:28px; max-width:340px; width:90%; padding:28px 24px; text-align:center; box-shadow:0 40px 60px rgba(0,0,0,0.3); }
+        .payment-modal h3 { font-size:1.5rem; margin-bottom:12px; color:#1e293b; }
+        .payment-modal p { color:#475569; margin-bottom:20px; }
+        .modal-buttons { display:flex; gap:12px; margin-top:8px; }
+        .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
+        .pay-now { background:#f59e0b; color:white; }
+        .exit-modal { background:#e2e8f0; color:#1e293b; }
+        /* First page (from first file) */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -502,27 +651,26 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        /* Chat page (from second file) */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
-        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+        .logo-area { display:flex; align-items:center; gap:12px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
-        .header-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-        .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
-        .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
-        .boost-btn.visible { display:block; }
-        .game-btn { background:#10b981; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; margin-left:5px; }
-        .pref-selector { display:flex; align-items:center; gap:8px; background:#f1f5f9; padding:6px 14px; border-radius:40px; }
-        .pref-selector label { font-weight:500; font-size:0.75rem; }
-        .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
-        @media (max-width: 768px) {
-            .chat-header { flex-direction:column; align-items:stretch; }
-            .header-right { justify-content:space-between; }
-        }
-        .chat-messages { flex:1; overflow-y:auto; padding:0; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
-        .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 8px; }
-        .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; margin-left:12px; }
-        .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; margin-right:12px; }
-        .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; }
+        .active-badge { background:#f1f5f9; padding:6px 12px; border-radius:40px; font-size:0.75rem; display:flex; align-items:center; gap:6px; }
+        .pref-and-gender { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+        .gender-selector, .pref-selector { background:#f1f5f9; padding:6px 16px; border-radius:40px; display:flex; align-items:center; gap:8px; }
+        .gender-selector label, .pref-selector label { font-weight:500; font-size:0.75rem; }
+        select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
+        .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; margin-left:8px; }
+        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; scroll-behavior:smooth; }
+        .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 0; word-break:break-word; }
+        .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; }
+        .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; }
+        .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; display:flex; flex-direction:column; gap:8px; }
+        .action-buttons { display:flex; gap:6px; justify-content:center; margin-top:4px; }
+        .action-btn { background:#2563eb; color:white; border:none; padding:4px 12px; border-radius:40px; cursor:pointer; font-size:0.7rem; }
+        .action-btn.decline { background:#ef4444; }
         .game-board { display:grid; grid-template-columns:repeat(3, 80px); gap:8px; justify-content:center; margin:10px 0; background:#f8fafc; padding:15px; border-radius:16px; align-self:center; }
         .game-cell { width:80px; height:80px; background:white; border:2px solid #cbd5e1; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:2rem; font-weight:bold; cursor:pointer; transition:0.2s; }
         .game-cell.active { cursor:pointer; background:#eef2ff; }
@@ -532,29 +680,45 @@ const htmlTemplate = `<!DOCTYPE html>
         .input-area { display:flex; gap:10px; padding:12px 16px; background:white; border-top:1px solid #e2e8f0; }
         .input-area input { flex:1; padding:12px 16px; border-radius:40px; border:1px solid #e2e8f0; font-family:inherit; font-size:0.9rem; }
         .send-btn { background:#2563eb; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; cursor:pointer; }
-        .action-buttons { display:flex; gap:10px; padding:0 16px 16px 16px; }
-        .action-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; cursor:pointer; }
+        .action-buttons-chat { display:flex; gap:10px; padding:0 16px 16px 16px; }
+        .action-buttons-chat button { flex:1; padding:12px; border-radius:40px; font-weight:600; cursor:pointer; }
         .main-action-btn { background:#2563eb; color:white; border:none; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .main-action-btn.end { background:#ef4444; }
         @media (max-width:700px) {
             .msg { max-width:90%; }
-            .action-buttons { flex-direction:column; }
-            .action-buttons button { width:100%; }
+            .action-buttons-chat { flex-direction:row; }
+            .action-buttons-chat button { width:100%; }
             .game-board { grid-template-columns:repeat(3, 60px); gap:6px; }
             .game-cell { width:60px; height:60px; font-size:1.5rem; }
+            .chat-header { flex-direction:column; align-items:stretch; gap:12px; }
+            .logo-area { justify-content:space-between; }
+            .pref-and-gender { justify-content:space-between; width:100%; flex-wrap:wrap; }
         }
     </style>
 </head>
 <body>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
+<div id="paymentModal" class="modal-overlay">
+    <div class="payment-modal">
+        <i class="fas fa-rupee-sign" style="font-size:2rem; color:#f59e0b;"></i>
+        <h3>₹2 Payment Required</h3>
+        <p>To chat with females, you need to pay ₹2 (10 minutes premium).</p>
+        <div class="modal-buttons">
+            <button id="modalPayNow" class="pay-now">Pay Now</button>
+            <button id="modalExit" class="exit-modal">Exit</button>
+        </div>
+    </div>
+</div>
+
+<!-- First page (from first file) -->
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Play Tic‑Tac‑Toe</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 30min of real female matches. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 10min of real female matches. Female/Other: always free.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
@@ -571,10 +735,22 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
+<!-- Chat page (from second file) -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
-        <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
-        <div class="header-right">
+        <div class="logo-area">
+            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
+            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
+        </div>
+        <div class="pref-and-gender">
+            <div class="gender-selector">
+                <label><i class="fas fa-user"></i> My gender:</label>
+                <select id="myGenderSelect">
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
             <div class="pref-selector">
                 <label><i class="fas fa-heart"></i> I want:</label>
                 <select id="chatPreferSelect">
@@ -584,20 +760,18 @@ const htmlTemplate = `<!DOCTYPE html>
                     <option value="other">Other</option>
                 </select>
             </div>
-            <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
-            <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹2 Boost</button>
-            <button id="gameBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
+            <button id="gameRequestBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Select your preference and click "Find Partner". Play Tic-Tac-Toe in real time!</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner".</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
         <input type="text" id="chatMsgInput" placeholder="Type a message..." autocomplete="off" disabled>
         <button id="sendChatMsgBtn" class="send-btn" disabled><i class="fas fa-paper-plane"></i> Send</button>
     </div>
-    <div class="action-buttons">
+    <div class="action-buttons-chat">
         <button id="mainActionBtn" class="main-action-btn"><i class="fas fa-random"></i> Find Partner</button>
         <button id="skipChatBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
     </div>
@@ -619,8 +793,11 @@ const htmlTemplate = `<!DOCTYPE html>
     let myTurn = false;
     let gameActive = false;
     let gameBoardVisible = false;
+    let mySymbol = null;
+    let pendingFindMatch = false;
 
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
+    function scrollToBottom() { var area = document.getElementById('chatMsgsArea'); area.scrollTop = area.scrollHeight; }
 
     async function apiCall(endpoint, method, data) {
         var opts = { method, headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId } };
@@ -633,35 +810,37 @@ const htmlTemplate = `<!DOCTYPE html>
         var res = await apiCall('/api/check-premium', 'POST', { sessionId }); 
         hasPremium = res.hasPremium; 
         premiumExpiry = res.expiry; 
-        updateBoostButtonVisibility();
     }
     async function getActiveUsers() { var res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
-    function updateBoostButtonVisibility() {
-        var boostBtn = document.getElementById('boostHeaderBtn');
-        var prefer = document.getElementById('chatPreferSelect').value;
-        if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            boostBtn.classList.add('visible');
-        } else {
-            boostBtn.classList.remove('visible');
-        }
+    async function sendGameRequest() {
+        if(!chatActive) { addSystemMsg("You need to be connected to someone first."); return; }
+        if(gameActive) { addSystemMsg("A game is already active."); return; }
+        var msg = JSON.stringify({ type: 'game_request' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+        addSystemMsg("🎮 Game request sent. Waiting for partner to accept...");
     }
 
-    async function startGame() {
-        if(!chatActive) { addSystemMsg("You need to be connected to someone first."); return; }
-        if(gameActive) { addSystemMsg("Game already active."); return; }
-        // The game state is always present (initialised when chat starts). Just make it visible.
-        if(gameBoardVisible) return;
-        gameBoardVisible = true;
-        addSystemMsg("🎮 Game board activated. Each player makes a move in turn.");
-        renderGameBoard();
-        // Send a game start request to the server? The server already has the game state.
-        // We'll just listen for updates.
+    async function acceptGame() {
+        var msg = JSON.stringify({ type: 'game_accept' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+    }
+    async function declineGame() {
+        var msg = JSON.stringify({ type: 'game_decline' });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
+    }
+
+    async function makeMove(index) {
+        if(!chatActive || !gameActive || !myTurn) return;
+        if(!gameBoard || gameBoard[index] !== '') return;
+        var moveMsg = JSON.stringify({ type: 'game_move', index: index });
+        await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
     }
 
     function renderGameBoard() {
         var oldBoard = document.getElementById('gameBoard');
         if(oldBoard) oldBoard.remove();
+        if(!gameBoardVisible) return;
         var container = document.getElementById('chatMsgsArea');
         var boardDiv = document.createElement('div');
         boardDiv.id = 'gameBoard';
@@ -677,18 +856,7 @@ const htmlTemplate = `<!DOCTYPE html>
         }
         container.appendChild(boardDiv);
         boardDiv.scrollIntoView({behavior:'smooth'});
-    }
-
-    async function makeMove(index) {
-        if(!chatActive || !gameActive || !myTurn) return;
-        if(!gameBoard || gameBoard[index] !== '') return;
-        var moveMsg = JSON.stringify({ type: 'game_move', index: index });
-        showLoading(true);
-        var res = await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
-        showLoading(false);
-        if(!res.success) {
-            addSystemMsg("Could not make move. Try again.");
-        }
+        scrollToBottom();
     }
 
     function handleGameState(state) {
@@ -701,27 +869,74 @@ const htmlTemplate = `<!DOCTYPE html>
             } else if(state.winner) {
                 addSystemMsg("😔 You lost. Better luck next time!");
             }
+            gameBoardVisible = false;
         }
         if(gameBoardVisible) renderGameBoard();
+        if(!state.gameActive && gameBoardVisible) {
+            gameBoardVisible = false;
+            var boardElement = document.getElementById('gameBoard');
+            if(boardElement) boardElement.remove();
+        }
     }
 
-    async function findMatch() {
-        if(chatActive) { endChat(); return; }
+    async function performFindMatch() {
         var prefer = document.getElementById('chatPreferSelect').value;
+        var myGenderVal = document.getElementById('myGenderSelect').value;
+        if(userGender === null) userGender = myGenderVal;
+        if(userGender !== myGenderVal) userGender = myGenderVal;
+
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            addSystemMsg("⚠️ You need to pay ₹2 to chat with real females. Click the Boost button.");
+            pendingFindMatch = true;
+            document.getElementById('paymentModal').classList.add('active');
             return;
         }
+        if(chatActive) { endChat(); }
         showLoading(true);
         var res = await apiCall('/api/find-match', 'POST', {
             prefer: prefer,
             sessionId,
-            userGender
+            userGender: userGender
         });
         showLoading(false);
         if(res.success && res.partner) startChat(res.partner);
         else if(res.message) addSystemMsg(res.message);
         else addSystemMsg("Could not find a partner. Try again.");
+    }
+
+    async function openRazorpay() {
+        showLoading(true);
+        var res = await apiCall('/api/create-order', 'POST', { amount: 2 });
+        showLoading(false);
+        if(!res.success){ addSystemMsg("Failed to create order."); return; }
+        var options = { key: res.key, amount: res.amount, currency: res.currency, name: "ChatWave", description: "Premium Boost (10 min)", order_id: res.orderId, handler: async function(response){
+            showLoading(true);
+            var verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId });
+            showLoading(false);
+            if(verifyRes.success){ 
+                addSystemMsg("✅ Payment successful! Premium activated for 10 minutes.");
+                await checkPremium(); 
+                document.getElementById('paymentModal').classList.remove('active');
+                if(pendingFindMatch) {
+                    pendingFindMatch = false;
+                    performFindMatch();
+                }
+            } else {
+                addSystemMsg("Payment verification failed.");
+            }
+        }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
+        var rzp = new Razorpay(options);
+        rzp.open();
+    }
+
+    function exitPaymentModal() {
+        document.getElementById('paymentModal').classList.remove('active');
+        document.getElementById('chatPreferSelect').value = 'any';
+        addSystemMsg("Preference changed to 'Anyone' because you declined payment.");
+        pendingFindMatch = false;
+    }
+
+    async function findMatch() {
+        performFindMatch();
     }
 
     async function skipChat() {
@@ -768,14 +983,12 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) endChat();
         activePartner = partner;
         chatActive = true;
-        gameActive = true;
-        gameBoardVisible = false;  // board will appear only when user clicks "Play"
-        // Determine my symbol based on order (first user is X, second is O)
-        // The client doesn't know yet – will be set when first game state arrives.
+        gameActive = false;
+        gameBoardVisible = false;
         mySymbol = null;
         clearChatMsgs();
         var genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
-        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello or play Tic-Tac-Toe!');
+        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello or invite them to play Tic‑Tac‑Toe!');
         updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
@@ -804,27 +1017,41 @@ const htmlTemplate = `<!DOCTYPE html>
             for(var i=0;i<res.messages.length;i++) {
                 var msg = res.messages[i];
                 if(msg.from === 'system') {
-                    addSystemMsg(msg.text);
+                    if(msg.actions && msg.actions.includes('accept_game')) {
+                        var wrapper = document.createElement('div');
+                        wrapper.className = 'sys-msg';
+                        wrapper.innerHTML = '<i class="fas fa-info-circle"></i> ' + msg.text;
+                        var btnDiv = document.createElement('div');
+                        btnDiv.className = 'action-buttons';
+                        var acceptBtn = document.createElement('button');
+                        acceptBtn.innerText = 'Accept';
+                        acceptBtn.className = 'action-btn';
+                        acceptBtn.onclick = () => acceptGame();
+                        var declineBtn = document.createElement('button');
+                        declineBtn.innerText = 'Decline';
+                        declineBtn.className = 'action-btn decline';
+                        declineBtn.onclick = () => declineGame();
+                        btnDiv.appendChild(acceptBtn);
+                        btnDiv.appendChild(declineBtn);
+                        wrapper.appendChild(btnDiv);
+                        document.getElementById('chatMsgsArea').appendChild(wrapper);
+                        scrollToBottom();
+                    } else {
+                        addSystemMsg(msg.text);
+                    }
                 } else if(msg.from === 'game') {
                     try {
                         var data = JSON.parse(msg.text);
                         if(data.type === 'game_state') {
-                            if(!mySymbol) {
-                                // Determine if we are X or O by comparing sessionId
-                                // The server does not send this, but we can deduce from who is X
-                                // We'll store later when we know whose turn – for now just set based on currentPlayer?
-                                // Actually easier: the client will know its symbol after the first move?
-                                // For now, just assume we are X if we are first user? Not reliable.
-                                // Better: server can send both players' IDs? Not needed. We'll just compute turn based on currentPlayer vs who moves.
-                                // For turn indication, we only need myTurn. The server sends currentPlayer, we compare with stored mySymbol.
-                                // We'll set mySymbol when we receive the first game state: if currentPlayer is 'X' and it's not our turn? No.
-                                // The simplest: we don't need mySymbol. We just need to know if it's our turn.
-                                // We can compute myTurn by comparing currentPlayer with the player who made the last move?
-                                // This is messy. Better to add a field 'yourSymbol' in the game_state.
-                                // Let's extend the server to send 'yourSymbol' to each client.
-                                // I will modify the server code to include 'yourSymbol' in the game_state message.
-                            }
+                            if(mySymbol === null && data.playerX === sessionId) mySymbol = 'X';
+                            else if(mySymbol === null && data.playerO === sessionId) mySymbol = 'O';
+                            else if(mySymbol === null) mySymbol = 'X';
                             handleGameState(data);
+                            if(!gameBoardVisible && data.gameActive) {
+                                gameBoardVisible = true;
+                                renderGameBoard();
+                                addSystemMsg("🎮 Game started! " + (myTurn ? "Your turn (X)." : "Opponent's turn (O)."));
+                            }
                         }
                     } catch(e) {}
                 } else {
@@ -872,7 +1099,7 @@ const htmlTemplate = `<!DOCTYPE html>
         div.className = 'sys-msg'; 
         div.innerHTML = '<i class="fas fa-info-circle"></i> ' + t; 
         area.appendChild(div); 
-        div.scrollIntoView({behavior:'smooth'}); 
+        scrollToBottom(); 
     }
     function addBubble(t, type) { 
         var area = document.getElementById('chatMsgsArea'); 
@@ -880,7 +1107,7 @@ const htmlTemplate = `<!DOCTYPE html>
         div.className = 'msg ' + (type === 'out' ? 'msg-out' : 'msg-in'); 
         div.innerText = t; 
         area.appendChild(div); 
-        div.scrollIntoView({behavior:'smooth'}); 
+        scrollToBottom(); 
     }
     function clearChatMsgs(keepSys){ 
         var area = document.getElementById('chatMsgsArea'); 
@@ -905,30 +1132,7 @@ const htmlTemplate = `<!DOCTYPE html>
         }
     }
 
-    async function openRazorpay() {
-        if(userGender !== 'male'){ addSystemMsg("Only male users can buy boost."); return; }
-        if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ addSystemMsg("Premium already active."); return; }
-        showLoading(true);
-        var res = await apiCall('/api/create-order', 'POST', { amount: 2 });
-        showLoading(false);
-        if(!res.success){ addSystemMsg("Failed to create order."); return; }
-        var options = { key: res.key, amount: res.amount, currency: res.currency, name: "ChatWave", description: "Premium Boost (30 min)", order_id: res.orderId, handler: async function(response){
-            showLoading(true);
-            var verifyRes = await apiCall('/api/verify-payment', 'POST', { razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, sessionId });
-            showLoading(false);
-            if(verifyRes.success){ 
-                addSystemMsg("✅ Payment successful! Premium activated for 30 minutes.");
-                await checkPremium(); 
-                updateBoostButtonVisibility(); 
-            } else {
-                addSystemMsg("Payment verification failed.");
-            }
-        }, prefill: { name: "ChatWave User", email: "user@chatwave.com" }, theme: { color: "#2563eb" } };
-        var rzp = new Razorpay(options);
-        rzp.open();
-    }
-
-    // Page transitions
+    // First page logic (from first file, compatible with second file's chat)
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -963,22 +1167,22 @@ const htmlTemplate = `<!DOCTYPE html>
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
         page2.classList.add('active');
+        var rulesText = "Welcome to chatwave! Please read the rules below:\n• You must be at least 18 years old\n• No nudity, hate speech, or harassment\n• Do not ask for gender. This is not a dating site\n• Respect others and be kind\n• Violators will be banned";
+        addSystemMsg(rulesText);
         checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2). Play Tic-Tac-Toe with your partner!");
-        document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
-        updateBoostButtonVisibility();
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
     document.getElementById('skipChatBtn').onclick = skipChat;
     document.getElementById('sendChatMsgBtn').onclick = sendMessage;
     document.getElementById('chatMsgInput').onkeypress = function(e) { if(e.key === 'Enter') sendMessage(); };
-    document.getElementById('boostHeaderBtn').onclick = openRazorpay;
-    document.getElementById('gameBtn').onclick = startGame;
-    
+    document.getElementById('gameRequestBtn').onclick = sendGameRequest;
+    document.getElementById('modalPayNow').onclick = openRazorpay;
+    document.getElementById('modalExit').onclick = exitPaymentModal;
+
     var msgInputChat = document.getElementById('chatMsgInput');
     msgInputChat.addEventListener('input', function() {
         if(!chatActive) return;
@@ -989,6 +1193,9 @@ const htmlTemplate = `<!DOCTYPE html>
         typingTimeout = setTimeout(function() {
             if(isTyping && chatActive) { isTyping = false; sendTyping(false); }
         }, 2000);
+    });
+    document.getElementById('myGenderSelect').addEventListener('change', function() {
+        if(userGender !== null) userGender = this.value;
     });
 </script>
 </body>
@@ -1004,6 +1211,6 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
-  console.log(`💰 Payment amount: ₹2 (male→female boost)`);
-  console.log(`🎮 Real‑time Tic‑Tac‑Toe game active between connected users.`);
+  console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
+  console.log(`🎮 Tic‑Tac‑Toe: after game ends, users can start a new game via the same button.`);
 });
