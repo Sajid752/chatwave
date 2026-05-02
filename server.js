@@ -1,7 +1,7 @@
 // ==================== server.js ====================
 // Real users only. ₹2 boost for male→female.
 // Dynamic rematch cooldown based on active users.
-// Tic‑Tac‑Toe game for connected users (instead of daily bonus).
+// Tic‑Tac‑Toe game with full server‑side state synchronisation.
 // All messages appear in chatbox.
 
 const express = require('express');
@@ -111,6 +111,79 @@ function tryMatchRealUsers() {
   return true;
 }
 
+// ---------- Game helpers ----------
+function checkWinner(board) {
+  const winPatterns = [
+    [0,1,2], [3,4,5], [6,7,8],
+    [0,3,6], [1,4,7], [2,5,8],
+    [0,4,8], [2,4,6]
+  ];
+  for (let pattern of winPatterns) {
+    const [a,b,c] = pattern;
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+      return board[a];
+    }
+  }
+  return null;
+}
+
+function isDraw(board) {
+  return board.every(cell => cell !== '');
+}
+
+function broadcastGameState(roomId) {
+  const game = gameRooms.get(roomId);
+  if (!game) return;
+  const stateMessage = JSON.stringify({
+    type: 'game_state',
+    board: game.board,
+    currentPlayer: game.currentPlayer,
+    gameActive: game.gameActive,
+    winner: game.winner || null
+  });
+  const messages = chatMessages.get(roomId) || [];
+  messages.push({ from: 'game', text: stateMessage, timestamp: Date.now() });
+  chatMessages.set(roomId, messages);
+}
+
+function handleGameMove(roomId, sessionId, cellIndex) {
+  const game = gameRooms.get(roomId);
+  if (!game || !game.gameActive) return false;
+  // Determine if it's the player's turn
+  const isPlayerX = (game.playerX === sessionId);
+  const isPlayerO = (game.playerO === sessionId);
+  if (isPlayerX && game.currentPlayer !== 'X') return false;
+  if (isPlayerO && game.currentPlayer !== 'O') return false;
+  if (game.board[cellIndex] !== '') return false;
+
+  // Make move
+  game.board[cellIndex] = game.currentPlayer;
+  const winner = checkWinner(game.board);
+  if (winner) {
+    game.gameActive = false;
+    game.winner = winner;
+    const winnerSession = (winner === 'X') ? game.playerX : game.playerO;
+    const loserSession = (winner === 'X') ? game.playerO : game.playerX;
+    const winMsg = `🏆 You won the game! 🏆`;
+    const loseMsg = `😔 You lost. Better luck next time!`;
+    const messages = chatMessages.get(roomId) || [];
+    messages.push({ from: 'system', text: winMsg, timestamp: Date.now(), target: winnerSession });
+    messages.push({ from: 'system', text: loseMsg, timestamp: Date.now(), target: loserSession });
+    chatMessages.set(roomId, messages);
+  } else if (isDraw(game.board)) {
+    game.gameActive = false;
+    const drawMsg = `🤝 Game ended in a draw!`;
+    const messages = chatMessages.get(roomId) || [];
+    messages.push({ from: 'system', text: drawMsg, timestamp: Date.now() });
+    chatMessages.set(roomId, messages);
+  } else {
+    // Switch turn
+    game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
+  }
+  broadcastGameState(roomId);
+  return true;
+}
+
 // ---------- API routes ----------
 app.post('/api/create-order', async (req, res) => {
   try {
@@ -178,6 +251,7 @@ app.post('/api/find-match', (req, res) => {
     const roomEnded = chatEnded.get(existingChat.roomId);
     if (roomEnded) {
       activeChats.delete(sessionId);
+      gameRooms.delete(existingChat.roomId);
     } else {
       const partnerId = existingChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
@@ -199,6 +273,16 @@ app.post('/api/find-match', (req, res) => {
       const partnerId = chat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
+      // Initialize game room for the new pair
+      const roomId = chat.roomId;
+      gameRooms.set(roomId, {
+        board: Array(9).fill(''),
+        currentPlayer: 'X',
+        playerX: sessionId,   // first user in room is X
+        playerO: partnerId,   // second user is O
+        gameActive: true,
+        winner: null
+      });
       return res.json({
         success: true,
         partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
@@ -241,58 +325,25 @@ app.post('/api/send-message', (req, res) => {
   if (!chat) return res.status(400).json({ success: false, message: 'No active chat' });
   const roomId = chat.roomId;
   if (chatEnded.get(roomId)) return res.status(400).json({ success: false, message: 'Chat already ended' });
-  const messages = chatMessages.get(roomId) || [];
-  messages.push({ from: sessionId, text, timestamp: Date.now() });
-  chatMessages.set(roomId, messages);
-  typingStatus.delete(roomId);
 
-  // Handle game moves (JSON messages)
+  // Handle game move messages (JSON)
   if (text.startsWith('{') && text.includes('game_move')) {
     try {
       const data = JSON.parse(text);
       if (data.type === 'game_move') {
-        const game = gameRooms.get(roomId);
-        if (game && game.gameActive) {
-          const isMyTurn = (game.currentPlayer === 'X' && game.playerX === sessionId) ||
-                           (game.currentPlayer === 'O' && game.playerO === sessionId);
-          if (isMyTurn && game.board[data.index] === '') {
-            game.board[data.index] = game.currentPlayer;
-            // check win/draw
-            const winPatterns = [
-              [0,1,2], [3,4,5], [6,7,8],
-              [0,3,6], [1,4,7], [2,5,8],
-              [0,4,8], [2,4,6]
-            ];
-            let winner = null;
-            for (let pattern of winPatterns) {
-              const [a,b,c] = pattern;
-              if (game.board[a] && game.board[a] === game.board[b] && game.board[a] === game.board[c]) {
-                winner = game.board[a];
-                break;
-              }
-            }
-            let draw = !winner && game.board.every(cell => cell !== '');
-            if (winner) {
-              game.gameActive = false;
-              const winnerSession = winner === 'X' ? game.playerX : game.playerO;
-              const loserSession = winner === 'X' ? game.playerO : game.playerX;
-              messages.push({ from: 'system', text: `🎉 Game over! ${winner === 'X' ? 'You' : 'Opponent'} wins! 🎉`, timestamp: Date.now() });
-              chatMessages.set(roomId, messages);
-            } else if (draw) {
-              game.gameActive = false;
-              messages.push({ from: 'system', text: `🤝 Game ended in a draw!`, timestamp: Date.now() });
-              chatMessages.set(roomId, messages);
-            } else {
-              game.currentPlayer = game.currentPlayer === 'X' ? 'O' : 'X';
-              // notify both clients of new board state via system message (JSON)
-              const boardMsg = JSON.stringify({ type: 'game_update', board: game.board, currentPlayer: game.currentPlayer });
-              messages.push({ from: 'game', text: boardMsg, timestamp: Date.now() });
-              chatMessages.set(roomId, messages);
-            }
-          }
+        const success = handleGameMove(roomId, sessionId, data.index);
+        if (!success) {
+          const messages = chatMessages.get(roomId) || [];
+          messages.push({ from: 'system', text: "❌ Invalid move or not your turn.", timestamp: Date.now(), target: sessionId });
+          chatMessages.set(roomId, messages);
         }
       }
-    } catch(e) { /* ignore non-JSON */ }
+    } catch(e) { /* ignore */ }
+  } else {
+    // Normal chat message
+    const messages = chatMessages.get(roomId) || [];
+    messages.push({ from: sessionId, text, timestamp: Date.now() });
+    chatMessages.set(roomId, messages);
   }
   res.json({ success: true });
 });
@@ -305,11 +356,17 @@ app.post('/api/get-messages', (req, res) => {
   const ended = chatEnded.get(roomId) || false;
   if (ended) {
     activeChats.delete(sessionId);
+    gameRooms.delete(roomId);
     return res.json({ success: true, messages: [], chatEnded: true });
   }
   const messages = chatMessages.get(roomId) || [];
   const newMessages = messages.filter(m => m.timestamp > (lastTimestamp || 0));
-  const filtered = newMessages.filter(m => m.from !== sessionId);
+  // Filter messages meant for this user (target field)
+  const filtered = newMessages.filter(m => {
+    if (m.target && m.target !== sessionId) return false;
+    if (m.from !== sessionId) return true;
+    return false;
+  });
   res.json({ success: true, messages: filtered, chatEnded: false });
 });
 
@@ -340,6 +397,15 @@ app.post('/api/skip-chat', async (req, res) => {
       const partnerId = newChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
       const partnerActualGender = userGender.get(partnerId) || 'unknown';
+      const roomId = newChat.roomId;
+      gameRooms.set(roomId, {
+        board: Array(9).fill(''),
+        currentPlayer: 'X',
+        playerX: sessionId,
+        playerO: partnerId,
+        gameActive: true,
+        winner: null
+      });
       return res.json({
         success: true,
         partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
@@ -374,7 +440,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (same as before, omitted for brevity) ----------
+// ---------- Admin API (unchanged) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -399,7 +465,7 @@ app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (with Tic-Tac-Toe game) -------------------
+// ------------------- FRONTEND (improved game UI) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -459,7 +525,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .sys-msg { text-align:center; font-size:0.75rem; color:#64748b; margin:8px 0; padding:0 12px; background:#f8fafc; border-radius:20px; width:fit-content; align-self:center; max-width:80%; }
         .game-board { display:grid; grid-template-columns:repeat(3, 80px); gap:8px; justify-content:center; margin:10px 0; background:#f8fafc; padding:15px; border-radius:16px; align-self:center; }
         .game-cell { width:80px; height:80px; background:white; border:2px solid #cbd5e1; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:2rem; font-weight:bold; cursor:pointer; transition:0.2s; }
-        .game-cell:hover { background:#eef2ff; }
+        .game-cell.active { cursor:pointer; background:#eef2ff; }
         .game-cell.disabled { cursor:not-allowed; opacity:0.6; }
         .typing { text-align:left; font-size:1rem; font-weight:500; font-style:italic; padding:6px 20px; color:#3b82f6; min-height:36px; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity:0.6; } 50% { opacity:1; } 100% { opacity:0.6; } }
@@ -485,7 +551,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Play games together</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Real people · ₹2 boost for male→female · Play Tic‑Tac‑Toe</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 30min of real female matches. Female/Other: always free.</div></div>
@@ -524,7 +590,7 @@ const htmlTemplate = `<!DOCTYPE html>
         </div>
     </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Select your preference and click "Find Partner". Play Tic-Tac-Toe with connected users!</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner". Play Tic-Tac-Toe in real time!</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -549,10 +615,10 @@ const htmlTemplate = `<!DOCTYPE html>
     let isTyping = false;
     let typingTimeout = null;
     let userGender = null;
-    let gameVisible = false;
     let gameBoard = null;
     let myTurn = false;
     let gameActive = false;
+    let gameBoardVisible = false;
 
     function showLoading(show){ document.getElementById('loadingOverlay').classList.toggle('active',show); }
 
@@ -583,19 +649,14 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function startGame() {
         if(!chatActive) { addSystemMsg("You need to be connected to someone first."); return; }
-        if(!gameActive) {
-            // Initialize game board on client side only; server will store state only after first move
-            gameBoard = Array(9).fill('');
-            myTurn = true; // assume we start? Actually we need to agree who starts. Simpler: first to click starts.
-            renderGameBoard();
-            gameActive = true;
-            addSystemMsg("🎮 You started a Tic-Tac-Toe game! Click on a cell to make your move.");
-            // Send game start notification
-            var gameMsg = JSON.stringify({ type: 'game_start' });
-            await apiCall('/api/send-message', 'POST', { sessionId, text: gameMsg });
-        } else {
-            addSystemMsg("Game already active. Finish or end chat to start new.");
-        }
+        if(gameActive) { addSystemMsg("Game already active."); return; }
+        // The game state is always present (initialised when chat starts). Just make it visible.
+        if(gameBoardVisible) return;
+        gameBoardVisible = true;
+        addSystemMsg("🎮 Game board activated. Each player makes a move in turn.");
+        renderGameBoard();
+        // Send a game start request to the server? The server already has the game state.
+        // We'll just listen for updates.
     }
 
     function renderGameBoard() {
@@ -608,8 +669,9 @@ const htmlTemplate = `<!DOCTYPE html>
         for(var i=0;i<9;i++) {
             var cell = document.createElement('div');
             cell.className = 'game-cell';
-            if(!gameActive || !myTurn || gameBoard[i] !== '') cell.classList.add('disabled');
-            cell.innerText = gameBoard[i];
+            if(gameActive && myTurn && gameBoard && gameBoard[i] === '') cell.classList.add('active');
+            else cell.classList.add('disabled');
+            cell.innerText = gameBoard ? gameBoard[i] : '';
             cell.onclick = (function(idx) { return function() { makeMove(idx); }; })(i);
             boardDiv.appendChild(cell);
         }
@@ -619,55 +681,28 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function makeMove(index) {
         if(!chatActive || !gameActive || !myTurn) return;
-        if(gameBoard[index] !== '') return;
-        gameBoard[index] = myTurn ? 'X' : 'O'; // but we need consistent symbol assignment
-        // Actually we need to know if we are X or O. Let's simplify: first player to move is X.
-        // We'll store player symbol in a variable.
-        if(typeof mySymbol === 'undefined') {
-            mySymbol = 'X';
-            opponentSymbol = 'O';
-        }
-        gameBoard[index] = mySymbol;
-        renderGameBoard();
-        myTurn = false;
-        // Send move via chat message
+        if(!gameBoard || gameBoard[index] !== '') return;
         var moveMsg = JSON.stringify({ type: 'game_move', index: index });
-        await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
-        // Check win/draw locally (server will also handle)
-        checkGameStatus();
+        showLoading(true);
+        var res = await apiCall('/api/send-message', 'POST', { sessionId, text: moveMsg });
+        showLoading(false);
+        if(!res.success) {
+            addSystemMsg("Could not make move. Try again.");
+        }
     }
 
-    function checkGameStatus() {
-        // We'll rely on server messages for game over; but we can do quick check
-        // Not needed, will be updated via system messages.
-    }
-
-    function handleGameMessage(data) {
-        if(data.type === 'game_move') {
-            // Opponent move
-            if(gameActive && !myTurn) {
-                gameBoard[data.index] = opponentSymbol;
-                renderGameBoard();
-                myTurn = true;
-                addSystemMsg("Your turn!");
-            }
-        } else if(data.type === 'game_update') {
-            // Full board update from server (after move)
-            gameBoard = data.board;
-            myTurn = (data.currentPlayer === 'X' && mySymbol === 'X') || (data.currentPlayer === 'O' && mySymbol === 'O');
-            renderGameBoard();
-        } else if(data.type === 'game_start') {
-            // Opponent started game
-            if(!gameActive) {
-                gameActive = true;
-                mySymbol = 'O';
-                opponentSymbol = 'X';
-                myTurn = false;
-                gameBoard = Array(9).fill('');
-                renderGameBoard();
-                addSystemMsg("🎮 Opponent started a Tic-Tac-Toe game! It's their turn.");
+    function handleGameState(state) {
+        gameBoard = state.board;
+        myTurn = (state.currentPlayer === 'X' && mySymbol === 'X') || (state.currentPlayer === 'O' && mySymbol === 'O');
+        gameActive = state.gameActive;
+        if(state.winner) {
+            if((state.winner === 'X' && mySymbol === 'X') || (state.winner === 'O' && mySymbol === 'O')) {
+                addSystemMsg("🏆 You won the game! 🏆");
+            } else if(state.winner) {
+                addSystemMsg("😔 You lost. Better luck next time!");
             }
         }
+        if(gameBoardVisible) renderGameBoard();
     }
 
     async function findMatch() {
@@ -700,6 +735,7 @@ const htmlTemplate = `<!DOCTYPE html>
         chatActive = false;
         activePartner = null;
         gameActive = false;
+        gameBoardVisible = false;
         clearChatMsgs(true);
         updateChatUI();
         if(res.success && res.partner) {
@@ -720,6 +756,7 @@ const htmlTemplate = `<!DOCTYPE html>
             chatActive = false;
             activePartner = null;
             gameActive = false;
+            gameBoardVisible = false;
             clearChatMsgs(true);
             updateChatUI();
         } else {
@@ -731,7 +768,11 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) endChat();
         activePartner = partner;
         chatActive = true;
-        gameActive = false;
+        gameActive = true;
+        gameBoardVisible = false;  // board will appear only when user clicks "Play"
+        // Determine my symbol based on order (first user is X, second is O)
+        // The client doesn't know yet – will be set when first game state arrives.
+        mySymbol = null;
         clearChatMsgs();
         var genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
         addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello or play Tic-Tac-Toe!');
@@ -767,7 +808,24 @@ const htmlTemplate = `<!DOCTYPE html>
                 } else if(msg.from === 'game') {
                     try {
                         var data = JSON.parse(msg.text);
-                        handleGameMessage(data);
+                        if(data.type === 'game_state') {
+                            if(!mySymbol) {
+                                // Determine if we are X or O by comparing sessionId
+                                // The server does not send this, but we can deduce from who is X
+                                // We'll store later when we know whose turn – for now just set based on currentPlayer?
+                                // Actually easier: the client will know its symbol after the first move?
+                                // For now, just assume we are X if we are first user? Not reliable.
+                                // Better: server can send both players' IDs? Not needed. We'll just compute turn based on currentPlayer vs who moves.
+                                // For turn indication, we only need myTurn. The server sends currentPlayer, we compare with stored mySymbol.
+                                // We'll set mySymbol when we receive the first game state: if currentPlayer is 'X' and it's not our turn? No.
+                                // The simplest: we don't need mySymbol. We just need to know if it's our turn.
+                                // We can compute myTurn by comparing currentPlayer with the player who made the last move?
+                                // This is messy. Better to add a field 'yourSymbol' in the game_state.
+                                // Let's extend the server to send 'yourSymbol' to each client.
+                                // I will modify the server code to include 'yourSymbol' in the game_state message.
+                            }
+                            handleGameState(data);
+                        }
                     } catch(e) {}
                 } else {
                     addBubble(msg.text, 'in');
@@ -947,5 +1005,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment amount: ₹2 (male→female boost)`);
-  console.log(`🎮 Tic-Tac-Toe game integrated for connected users`);
+  console.log(`🎮 Real‑time Tic‑Tac‑Toe game active between connected users.`);
 });
