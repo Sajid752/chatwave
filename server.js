@@ -37,16 +37,16 @@ function savePayment(payment) {
 }
 
 // ---------- In‑memory stores ----------
-const activeSessions = new Map();          // sessionId -> lastSeen
-const userPremiums = new Map();            // sessionId -> expiry timestamp
-const userGender = new Map();              // sessionId -> 'male'|'female'|'other'
-const waitingQueue = [];                   // sessionIds waiting for a partner
-const activeChats = new Map();             // sessionId -> { partnerSessionId, roomId }
-const chatMessages = new Map();            // roomId -> array of messages
-const chatEnded = new Map();               // roomId -> boolean
-const userPreferredGender = new Map();     // sessionId -> 'any'|'female'|'male'|'other'
-const typingStatus = new Map();            // roomId -> { userId, timestamp }
-let totalMatches = 0;                      // simple counter for matches created
+const activeSessions = new Map();
+const userPremiums = new Map();
+const userGender = new Map();
+const waitingQueue = [];
+const activeChats = new Map();
+const chatMessages = new Map();
+const chatEnded = new Map();
+const userPreferredGender = new Map();
+const typingStatus = new Map();
+let totalMatches = 0;
 
 function isPremiumActive(sessionId) {
   const expiry = userPremiums.get(sessionId);
@@ -57,7 +57,6 @@ function createRoomId() {
   return 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
 }
 
-// Match two real users from the waiting queue
 function tryMatchRealUsers() {
   if (waitingQueue.length < 2) return false;
   const userA = waitingQueue.shift();
@@ -91,7 +90,6 @@ app.post('/api/verify-payment', (req, res) => {
   const expectedSignature = crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(body).digest('hex');
   if (expectedSignature === razorpay_signature) {
     userPremiums.set(sessionId, Date.now() + 30 * 60 * 1000);
-    // Save payment record
     const paymentRecord = {
       id: razorpay_payment_id,
       orderId: razorpay_order_id,
@@ -284,7 +282,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API endpoints (protected) ----------
+// ---------- Admin API endpoints ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) {
@@ -298,7 +296,6 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
   const activeUsers = Array.from(activeSessions.values()).filter(t => now - t < 60000).length;
   const totalRevenue = payments.reduce((sum, p) => sum + p.amount, 0);
   const totalPayments = payments.length;
-  // Last 7 days payments
   const last7Days = [];
   for (let i = 6; i >= 0; i--) {
     const date = new Date();
@@ -322,7 +319,6 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
   });
 });
 
-// Admin dashboard HTML (same as before)
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) {
@@ -402,7 +398,7 @@ app.get('/admin', (req, res) => {
   `);
 });
 
-// ------------------- FRONTEND (removed self-gender badge, shows partner gender) -------------------
+// ------------------- FRONTEND (unchanged, as above) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -422,7 +418,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        /* First page */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -443,7 +438,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        /* Chat page */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
@@ -474,7 +468,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .main-action-btn { background:#2563eb; color:white; border:none; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .main-action-btn.end { background:#ef4444; }
-        .partner-info { font-size:0.8rem; color:#475569; margin-left:12px; }
         @media (max-width:700px) {
             .msg { max-width:90%; }
             .action-buttons { flex-direction:column; }
@@ -640,7 +633,6 @@ const htmlTemplate = `<!DOCTYPE html>
         activePartner = partner;
         chatActive = true;
         clearChatMsgs();
-        // Show partner's gender in a system message
         var genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
         addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello.');
         updateChatUI();
@@ -747,7 +739,6 @@ const htmlTemplate = `<!DOCTYPE html>
         rzp.open();
     }
 
-    // Page transitions and gender selection
     var page1 = document.getElementById('page1');
     var page2 = document.getElementById('page2');
     var acceptCheck = document.getElementById('acceptTerms');
@@ -817,6 +808,11 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`📊 Admin dashboard at /admin?key=YOUR_ADMIN_SECRET`);
-  console.log(`👤 Partner's gender is shown on connection (not your own)`);
+  if (ADMIN_SECRET) {
+    console.log(`📊 Admin dashboard enabled at /admin?key=${ADMIN_SECRET}`);
+    console.log(`   Example: https://your-app.onrender.com/admin?key=${ADMIN_SECRET}`);
+  } else {
+    console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
+  }
+  console.log(`💰 Payment amount: ₹2 (male→female boost)`);
 });
