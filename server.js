@@ -1,7 +1,8 @@
 // ==================== server.js ====================
 // No bots – Only real users.
-// Male → Female requires ₹12 payment (30 min premium).
-// Clean UI, full‑screen chat.
+// Male → Female requires ₹2 payment (30 min premium).
+// Clean UI, preference selector in header on desktop.
+// User gender shown in header.
 
 const express = require('express');
 const cors = require('cors');
@@ -100,7 +101,7 @@ app.post('/api/find-match', (req, res) => {
   const myGender = userGender.get(sessionId);
   const hasPrem = isPremiumActive(sessionId);
   if (myGender === 'male' && prefer === 'female' && !hasPrem) {
-    return res.json({ success: false, message: "You need to pay ₹12 to chat with females. Click the Boost button." });
+    return res.json({ success: false, message: "You need to pay ₹2 to chat with females. Click the Boost button." });
   }
 
   // If already in a chat, return that partner
@@ -252,7 +253,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ------------------- FRONTEND (clean UI, no bots) -------------------
+// ------------------- FRONTEND (clean, gender in header, ₹2, preference inline on desktop) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -272,7 +273,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid white; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        /* First page: full viewport, centered */
+        /* First page */
         .page { min-height:100vh; width:100%; background: linear-gradient(145deg, #f0f4f8, #e2e8f0); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; }
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
@@ -293,18 +294,25 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-option input { display:none; }
         .go-chat-btn { width:100%; background:linear-gradient(95deg, #2563eb, #1d4ed8); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
         .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        /* Chat page: full screen chat */
+        /* Chat page */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
-        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+        .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+        .logo-area { display:flex; align-items:center; gap:12px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
-        .header-actions { display:flex; align-items:center; gap:12px; }
+        .user-gender-badge { background:#f1f5f9; padding:4px 12px; border-radius:40px; font-size:0.75rem; font-weight:500; }
+        .header-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
         .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
         .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
         .boost-btn.visible { display:block; }
-        .pref-selector { background:#f1f5f9; margin:8px 16px; padding:8px 16px; border-radius:40px; display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap; }
-        .pref-selector label { font-weight:600; font-size:0.8rem; }
-        .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:5px 12px; font-size:0.8rem; }
+        .pref-selector { display:flex; align-items:center; gap:8px; background:#f1f5f9; padding:6px 14px; border-radius:40px; }
+        .pref-selector label { font-weight:500; font-size:0.75rem; }
+        .pref-selector select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
+        @media (max-width: 768px) {
+            .chat-header { flex-direction:column; align-items:stretch; }
+            .header-right { justify-content:space-between; }
+            .pref-selector { justify-content:center; }
+        }
         .chat-messages { flex:1; overflow-y:auto; padding:0; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 8px; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; margin-left:12px; }
@@ -323,7 +331,6 @@ const htmlTemplate = `<!DOCTYPE html>
             .msg { max-width:90%; }
             .action-buttons { flex-direction:column; }
             .action-buttons button { width:100%; }
-            .header-actions { flex-direction:row; }
         }
     </style>
 </head>
@@ -333,10 +340,10 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · No bots</p></div>
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 payment for male→female</p></div>
         <div class="terms-content">
             <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹12 unlocks 100% real female match. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 30min of real female matches. Female/Other: always free.</div></div>
             <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
             <div class="gender-selector">
                 <label><i class="fas fa-user"></i> I am a:</label>
@@ -355,23 +362,26 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page2" class="chat-page">
     <div class="chat-header">
-        <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
-        <div class="header-actions">
+        <div class="logo-area">
+            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
+            <div class="user-gender-badge" id="userGenderBadge">—</div>
+        </div>
+        <div class="header-right">
+            <div class="pref-selector">
+                <label><i class="fas fa-heart"></i> I want:</label>
+                <select id="chatPreferSelect">
+                    <option value="any">Anyone</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
             <div class="active-badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
-            <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹12 Boost</button>
+            <button id="boostHeaderBtn" class="boost-btn"><i class="fas fa-rupee-sign"></i> Pay ₹2 Boost</button>
         </div>
     </div>
-    <div class="pref-selector">
-        <label><i class="fas fa-heart"></i> I want to chat with:</label>
-        <select id="chatPreferSelect">
-            <option value="any">✨ Anyone</option>
-            <option value="female">👩 Female</option>
-            <option value="male">👨 Male</option>
-            <option value="other">🌈 Other</option>
-        </select>
-    </div>
     <div class="chat-messages" id="chatMsgsArea">
-        <div class="sys-msg">✨ Only real users – no bots. Select your preference and click "Find Partner".</div>
+        <div class="sys-msg">✨ Select your preference and click "Find Partner". Only real people – no bots.</div>
     </div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
@@ -429,7 +439,7 @@ const htmlTemplate = `<!DOCTYPE html>
         if(chatActive) { endChat(); return; }
         var prefer = document.getElementById('chatPreferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
-            showToast("You need to pay ₹12 to chat with real females. Click the Boost button.", "warning");
+            showToast("You need to pay ₹2 to chat with real females. Click the Boost button.", "warning");
             return;
         }
         showLoading(true);
@@ -576,7 +586,7 @@ const htmlTemplate = `<!DOCTYPE html>
         if(userGender !== 'male'){ showToast("Only male users can buy boost.",'warning'); return; }
         if(hasPremium && premiumExpiry && Date.now()<premiumExpiry){ showToast("Premium already active.",'info'); return; }
         showLoading(true);
-        var res = await apiCall('/api/create-order', 'POST', { amount: 12 });
+        var res = await apiCall('/api/create-order', 'POST', { amount: 2 });
         showLoading(false);
         if(!res.success){ showToast("Failed to create order.",'error'); return; }
         var options = { key: res.key, amount: res.amount, currency: res.currency, name: "ChatWave", description: "Premium Boost (30 min)", order_id: res.orderId, handler: async function(response){
@@ -623,13 +633,16 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
+        // Update header badge
+        var displayGender = userGender === 'male' ? 'Male' : (userGender === 'female' ? 'Female' : 'Other');
+        document.getElementById('userGenderBadge').innerText = displayGender;
         page1.style.display = 'none';
         page2.classList.add('active');
         checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹12) for real female matches.");
+        addSystemMsg("👋 Only real users! Male users: select 'Female' to see the Boost button (₹2) for real female matches.");
         document.getElementById('chatPreferSelect').addEventListener('change', updateBoostButtonVisibility);
         updateBoostButtonVisibility();
     });
@@ -660,6 +673,6 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🤖 No bots – only real user matching.`);
-  console.log(`💰 Boost button appears for male users when they select "Female"`);
+  console.log(`💬 No bots – only real user matching.`);
+  console.log(`💰 Payment amount: ₹2 (male → female boost)`);
 });
