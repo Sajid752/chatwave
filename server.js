@@ -1,7 +1,7 @@
 // ==================== server.js ====================
 // Real users only. ₹2 payment for male→female.
 // Admin dashboard at /admin?key=YOUR_SECRET_KEY
-// Payments stored in payments.json
+// Shows partner's gender on connection (not your own)
 
 const express = require('express');
 const cors = require('cors');
@@ -142,9 +142,10 @@ app.post('/api/find-match', (req, res) => {
     } else {
       const partnerId = existingChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
+      const partnerActualGender = userGender.get(partnerId) || 'unknown';
       return res.json({
         success: true,
-        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+        partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
       });
     }
   }
@@ -159,9 +160,10 @@ app.post('/api/find-match', (req, res) => {
     if (chat && chat.partnerSessionId) {
       const partnerId = chat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
+      const partnerActualGender = userGender.get(partnerId) || 'unknown';
       return res.json({
         success: true,
-        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+        partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
       });
     }
   }
@@ -169,7 +171,6 @@ app.post('/api/find-match', (req, res) => {
   return res.json({ success: false, message: "No real users online. Please try again later." });
 });
 
-// Typing and chat endpoints (unchanged from previous version)
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -251,9 +252,10 @@ app.post('/api/skip-chat', async (req, res) => {
     if (newChat && newChat.partnerSessionId) {
       const partnerId = newChat.partnerSessionId;
       const partnerPref = userPreferredGender.get(partnerId) || 'any';
+      const partnerActualGender = userGender.get(partnerId) || 'unknown';
       return res.json({
         success: true,
-        partner: { name: 'Real user', gender: partnerPref, region: 'world', id: partnerId, isBot: false }
+        partner: { name: 'Real user', gender: partnerPref, actualGender: partnerActualGender, region: 'world', id: partnerId, isBot: false }
       });
     }
   }
@@ -320,7 +322,7 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
   });
 });
 
-// Admin dashboard HTML
+// Admin dashboard HTML (same as before)
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) {
@@ -378,7 +380,6 @@ app.get('/admin', (req, res) => {
         tbody.innerHTML = data.recentPayments.map(p => \`
             <tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>
         \`).join('');
-        // chart
         const ctx = document.getElementById('dailyChart').getContext('2d');
         if (window.dailyChart) window.dailyChart.destroy();
         window.dailyChart = new Chart(ctx, {
@@ -401,7 +402,7 @@ app.get('/admin', (req, res) => {
   `);
 });
 
-// ------------------- FRONTEND (same as previous, with ₹2 and gender display) -------------------
+// ------------------- FRONTEND (removed self-gender badge, shows partner gender) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -446,9 +447,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#ffffff; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:white; border-bottom:1px solid #e2e8f0; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
-        .logo-area { display:flex; align-items:center; gap:12px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #1e293b, #2563eb); -webkit-background-clip:text; background-clip:text; color:transparent; }
-        .user-gender-badge { background:#f1f5f9; padding:4px 12px; border-radius:40px; font-size:0.75rem; font-weight:500; }
         .header-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
         .active-badge { background:#f1f5f9; padding:6px 14px; border-radius:40px; font-size:0.8rem; display:flex; align-items:center; gap:8px; }
         .boost-btn { background:#f59e0b; border:none; padding:6px 16px; border-radius:40px; color:white; font-weight:600; font-size:0.8rem; cursor:pointer; display:none; }
@@ -475,6 +474,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .main-action-btn { background:#2563eb; color:white; border:none; }
         .skip-btn { background:#f59e0b; color:white; border:none; }
         .main-action-btn.end { background:#ef4444; }
+        .partner-info { font-size:0.8rem; color:#475569; margin-left:12px; }
         @media (max-width:700px) {
             .msg { max-width:90%; }
             .action-buttons { flex-direction:column; }
@@ -510,10 +510,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
 <div id="page2" class="chat-page">
     <div class="chat-header">
-        <div class="logo-area">
-            <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
-            <div class="user-gender-badge" id="userGenderBadge">—</div>
-        </div>
+        <div class="logo"><i class="fas fa-waveform"></i> ChatWave</div>
         <div class="header-right">
             <div class="pref-selector">
                 <label><i class="fas fa-heart"></i> I want:</label>
@@ -643,7 +640,9 @@ const htmlTemplate = `<!DOCTYPE html>
         activePartner = partner;
         chatActive = true;
         clearChatMsgs();
-        addSystemMsg('✨ Connected with a real person! Say hello.');
+        // Show partner's gender in a system message
+        var genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
+        addSystemMsg('✨ Connected with a real person (' + genderDisplay + ')! Say hello.');
         updateChatUI();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval);
@@ -781,8 +780,6 @@ const htmlTemplate = `<!DOCTYPE html>
         if(!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
-        var displayGender = userGender === 'male' ? 'Male' : (userGender === 'female' ? 'Female' : 'Other');
-        document.getElementById('userGenderBadge').innerText = displayGender;
         page1.style.display = 'none';
         page2.classList.add('active');
         checkPremium();
@@ -821,5 +818,5 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
   console.log(`📊 Admin dashboard at /admin?key=YOUR_ADMIN_SECRET`);
-  console.log(`💰 Payment amount: ₹2 (male→female boost)`);
+  console.log(`👤 Partner's gender is shown on connection (not your own)`);
 });
