@@ -1,8 +1,8 @@
 // ==================== server.js ====================
-// Original first page: gender + checkbox + "Enter ChatWave".
-// After entering, rules appear as system message in chat.
+// Multi‑game support: after a game ends, board resets and users can start a new one.
+// Original first page (gender + checkbox). Rules appear in chatbox.
 // Payment modal for male→female (₹2 / 10 min).
-// Tic-Tac-Toe with draw detection. Messages scroll to bottom.
+// Messages scroll to bottom.
 
 const express = require('express');
 const cors = require('cors');
@@ -49,7 +49,7 @@ const typingStatus = new Map();            // roomId -> { userId, timestamp }
 const lastPartner = new Map();             // sessionId -> { partnerId, timestamp }
 let totalMatches = 0;
 
-// Game state per room
+// Game state per room – includes an "ended" flag to allow reset
 const gameRooms = new Map(); // roomId -> { board, currentPlayer, playerX, playerO, gameActive, requestPending, requestFrom }
 
 function isPremiumActive(sessionId) {
@@ -148,6 +148,19 @@ function broadcastGameState(roomId) {
   chatMessages.set(roomId, messages);
 }
 
+// Reset game for a new round (same room, same players)
+function resetGame(roomId) {
+  const game = gameRooms.get(roomId);
+  if (!game) return;
+  game.board = Array(9).fill('');
+  game.currentPlayer = 'X';  // X always starts
+  game.gameActive = false;    // not active until new request accepted
+  game.winner = null;
+  game.requestPending = false;
+  game.requestFrom = null;
+  broadcastGameState(roomId);
+}
+
 function handleGameMove(roomId, sessionId, cellIndex) {
   const game = gameRooms.get(roomId);
   if (!game || !game.gameActive) return false;
@@ -168,11 +181,15 @@ function handleGameMove(roomId, sessionId, cellIndex) {
     messages.push({ from: 'system', text: '🏆 You won the game! 🏆', timestamp: Date.now(), target: winnerSession });
     messages.push({ from: 'system', text: '😔 You lost. Better luck next time!', timestamp: Date.now(), target: loserSession });
     chatMessages.set(roomId, messages);
+    // Auto reset after a short delay to allow new game
+    setTimeout(() => resetGame(roomId), 3000);
   } else if (isDraw(game.board)) {
     game.gameActive = false;
     const messages = chatMessages.get(roomId) || [];
     messages.push({ from: 'system', text: '🤝 Game ended in a draw!', timestamp: Date.now() });
     chatMessages.set(roomId, messages);
+    // Auto reset after a short delay
+    setTimeout(() => resetGame(roomId), 3000);
   } else {
     game.currentPlayer = (game.currentPlayer === 'X') ? 'O' : 'X';
   }
@@ -315,6 +332,9 @@ app.post('/api/send-message', (req, res) => {
           game.gameActive = true;
           game.requestPending = false;
           game.requestFrom = null;
+          // Reset board if it was previously used (should be already empty from resetGame)
+          game.board = Array(9).fill('');
+          game.currentPlayer = 'X';
           const messages = chatMessages.get(roomId) || [];
           messages.push({ from: 'system', text: '🎮 Game accepted! The board will appear. X starts.', timestamp: Date.now() });
           chatMessages.set(roomId, messages);
@@ -485,7 +505,7 @@ app.get('/admin', (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (original first page, rules in chatbox) -------------------
+// ------------------- FRONTEND (multi‑game support) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -515,7 +535,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
         @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
         .terms-header { margin-bottom:24px; }
-        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
+        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; }
         .terms-content { text-align:left; }
         .rule-block { margin-bottom:24px; border-bottom:1px solid #eef2ff; padding-bottom:18px; }
         .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
@@ -542,7 +562,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-selector label, .pref-selector label { font-weight:500; font-size:0.75rem; }
         select { background:white; border:1px solid #cbd5e1; border-radius:30px; padding:4px 10px; font-size:0.75rem; }
         .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:600; font-size:0.75rem; cursor:pointer; margin-left:8px; }
-        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; }
+        .chat-messages { flex:1; overflow-y:auto; padding:16px 12px; display:flex; flex-direction:column; gap:8px; background:#ffffff; scroll-behavior:smooth; }
         .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:0.9rem; margin:4px 0; word-break:break-word; }
         .msg-in { background:#f1f5f9; align-self:flex-start; border-bottom-left-radius:4px; }
         .msg-out { background:#2563eb; color:white; align-self:flex-end; border-bottom-right-radius:4px; }
@@ -591,7 +611,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First page (original: gender + checkbox) -->
+<!-- First page -->
 <div id="page1" class="page">
     <div class="terms-container">
         <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
@@ -694,6 +714,7 @@ const htmlTemplate = `<!DOCTYPE html>
 
     async function sendGameRequest() {
         if(!chatActive) { addSystemMsg("You need to be connected to someone first."); return; }
+        // Allow new game even if previous game ended (gameActive false)
         if(gameActive) { addSystemMsg("A game is already active."); return; }
         var msg = JSON.stringify({ type: 'game_request' });
         await apiCall('/api/send-message', 'POST', { sessionId, text: msg });
@@ -751,6 +772,12 @@ const htmlTemplate = `<!DOCTYPE html>
             gameBoardVisible = false;
         }
         if(gameBoardVisible) renderGameBoard();
+        // If game is no longer active, hide the board (it will reappear on next game start)
+        if(!state.gameActive && gameBoardVisible) {
+            gameBoardVisible = false;
+            var boardElement = document.getElementById('gameBoard');
+            if(boardElement) boardElement.remove();
+        }
     }
 
     async function performFindMatch() {
@@ -1041,14 +1068,12 @@ const htmlTemplate = `<!DOCTYPE html>
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
         page2.classList.add('active');
-        // Show the welcome rules in chatbox
         var rulesText = "Welcome to chatwave! Please read the rules below:\n• You must be at least 18 years old\n• No nudity, hate speech, or harassment\n• Do not ask for gender. This is not a dating site\n• Respect others and be kind\n• Violators will be banned";
         addSystemMsg(rulesText);
         checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        // Optionally auto‑find? We'll let user click "Find Partner"
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -1088,5 +1113,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
   }
   console.log(`💰 Payment: ₹2 for 10 min female chat (modal only)`);
-  console.log(`🎮 Tic-Tac-Toe draw fixed, rules appear in chatbox after entering.`);
+  console.log(`🎮 Tic-Tac-Toe: after game ends, users can start a new game via the same button.`);
 });
