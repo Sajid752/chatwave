@@ -623,11 +623,11 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-radio-group { display:flex; justify-content:center; gap:20px; margin-top:10px; }
         .gender-radio-group label { display:flex; align-items:center; gap:6px; background:#0f172a; padding:8px 20px; border-radius:40px; cursor:pointer; border:1px solid #334155; transition:0.2s; }
         .gender-radio-group input { display:none; }
-        .gender-radio-group label:has(input:checked) { background:#3b82f6; border-color:#3b82f6; }
+        .gender-radio-group label:has(input:checked) { background:#3b82f6; border-color:#3b82f6; color:white; }
         .terms-check { margin:20px 0; display:flex; align-items:center; gap:12px; justify-content:center; }
         .enter-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:14px; border-radius:48px; font-size:1rem; font-weight:600; color:white; cursor:pointer; transition:0.2s; }
         .enter-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        /* Chat page */
+        /* Chat page (unchanged) */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#0f172a; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:#1e293b; border-bottom:1px solid #334155; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
@@ -939,17 +939,23 @@ const htmlTemplate = `<!DOCTYPE html>
     let genderError = document.getElementById('genderError');
     let selectedGender = null;
 
+    function updateButtonState() {
+        goBtn.disabled = !(selectedGender && acceptCheck.checked);
+    }
+
     genderRadios.forEach(radio => {
         radio.addEventListener('change', function() {
             if(this.checked) {
                 selectedGender = this.value;
                 genderError.innerText = '';
-                validateForm();
+                updateButtonState();
             }
         });
     });
-    function validateForm() { goBtn.disabled = !(selectedGender && acceptCheck.checked); }
-    acceptCheck.addEventListener('change', validateForm);
+    acceptCheck.addEventListener('change', updateButtonState);
+    // Initial state
+    updateButtonState();
+
     goBtn.addEventListener('click', async () => {
         if(!selectedGender) { genderError.innerText = 'Select your gender'; return; }
         userGender = selectedGender;
