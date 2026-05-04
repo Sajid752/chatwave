@@ -3,6 +3,7 @@
 // Payment: fixed UPI QR + transaction ID (no gateway, reusable protection)
 // Fully functional play‑again with partner request/accept
 // Admin dashboard with modern chart styling
+// First page gender selection fixed (radio buttons, works reliably)
 
 const express = require('express');
 const cors = require('cors');
@@ -618,9 +619,11 @@ const htmlTemplate = `<!DOCTYPE html>
         .rules { margin:24px 0; }
         .rule-item { display:flex; gap:12px; margin-bottom:16px; align-items:center; }
         .rule-icon { color:#3b82f6; font-size:1.2rem; }
-        .gender-options { display:flex; gap:16px; justify-content:center; margin:20px 0; }
-        .gender-btn { background:#0f172a; border:1px solid #334155; padding:10px 20px; border-radius:40px; cursor:pointer; transition:0.2s; }
-        .gender-btn.selected { background:#3b82f6; border-color:#3b82f6; color:white; }
+        .gender-selector { margin: 20px 0; text-align:center; }
+        .gender-radio-group { display:flex; justify-content:center; gap:20px; margin-top:10px; }
+        .gender-radio-group label { display:flex; align-items:center; gap:6px; background:#0f172a; padding:8px 20px; border-radius:40px; cursor:pointer; border:1px solid #334155; transition:0.2s; }
+        .gender-radio-group input { display:none; }
+        .gender-radio-group label:has(input:checked) { background:#3b82f6; border-color:#3b82f6; }
         .terms-check { margin:20px 0; display:flex; align-items:center; gap:12px; justify-content:center; }
         .enter-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:14px; border-radius:48px; font-size:1rem; font-weight:600; color:white; cursor:pointer; transition:0.2s; }
         .enter-btn:disabled { opacity:0.5; cursor:not-allowed; }
@@ -688,12 +691,12 @@ const htmlTemplate = `<!DOCTYPE html>
             <div class="rule-item"><div class="rule-icon"><i class="fas fa-question-circle"></i></div> Do not ask for gender / personal info</div>
             <div class="rule-item"><div class="rule-icon"><i class="fas fa-smile"></i></div> Be kind & respectful</div>
         </div>
-        <div class="gender-selector" style="text-align:center;">
-            <div style="margin-bottom:8px;">I am a:</div>
-            <div class="gender-options">
-                <div data-gender="male" class="gender-btn">Male</div>
-                <div data-gender="female" class="gender-btn">Female</div>
-                <div data-gender="other" class="gender-btn">Other</div>
+        <div class="gender-selector">
+            <div>I am a:</div>
+            <div class="gender-radio-group">
+                <label><input type="radio" name="userGender" value="male"> Male</label>
+                <label><input type="radio" name="userGender" value="female"> Female</label>
+                <label><input type="radio" name="userGender" value="other"> Other</label>
             </div>
             <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:8px;"></div>
         </div>
@@ -803,7 +806,6 @@ const htmlTemplate = `<!DOCTYPE html>
         let prefer = document.getElementById('preferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
             pendingFindMatch = true;
-            // Generate QR and show modal
             let qrDiv = document.getElementById('qrCodeContainer'); qrDiv.innerHTML = "";
             new QRCode(qrDiv, { text: "upi://pay?pa=chatwave@okhdfcbank&pn=ChatWave&am=2&cu=INR", width: 180, height: 180 });
             document.getElementById('paymentModal').classList.add('active');
@@ -930,18 +932,20 @@ const htmlTemplate = `<!DOCTYPE html>
         addSystemMsg("Payment canceled. Preference set to 'Anyone'.");
     }
 
-    // First page logic
+    // First page logic (fixed with radio buttons)
     let page1 = document.getElementById('page1'), page2 = document.getElementById('page2');
     let acceptCheck = document.getElementById('acceptTerms'), goBtn = document.getElementById('goToChatBtn');
-    let genderBtns = document.querySelectorAll('.gender-btn'), genderError = document.getElementById('genderError');
+    let genderRadios = document.querySelectorAll('input[name="userGender"]');
+    let genderError = document.getElementById('genderError');
     let selectedGender = null;
-    genderBtns.forEach(btn => {
-        btn.addEventListener('click', function() {
-            genderBtns.forEach(b => b.classList.remove('selected'));
-            this.classList.add('selected');
-            selectedGender = this.getAttribute('data-gender');
-            genderError.innerText = '';
-            validateForm();
+
+    genderRadios.forEach(radio => {
+        radio.addEventListener('change', function() {
+            if(this.checked) {
+                selectedGender = this.value;
+                genderError.innerText = '';
+                validateForm();
+            }
         });
     });
     function validateForm() { goBtn.disabled = !(selectedGender && acceptCheck.checked); }
