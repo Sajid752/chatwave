@@ -1,6 +1,7 @@
 // ==================== server.js ====================
-// Merged: first page from Razorpay code (gender‑options), second page from transaction‑ID code.
-// Payment: UPI QR + transaction ID (no gateway). Full chat + Tic‑Tac‑Toe + play‑again.
+// Merged: first page from Razorpay code (gender‑options) – COLORS UPDATED.
+// Second page from transaction‑ID code (full chat + Tic‑Tac‑Toe + payment).
+// Payment: UPI QR + transaction ID (no gateway).
 
 const express = require('express');
 const cors = require('cors');
@@ -15,7 +16,7 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 app.use(cors());
 app.use(express.json());
 
-// ---------- Persistent storage ----------
+// ---------- Persistent storage (unchanged from working version) ----------
 const PAYMENTS_FILE = path.join(__dirname, 'payments.json');
 let payments = [];
 if (fs.existsSync(PAYMENTS_FILE)) {
@@ -114,7 +115,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ---------- Game helpers ----------
+// ---------- Game helpers (unchanged) ----------
 function checkWinner(board) {
   const winPatterns = [
     [0,1,2], [3,4,5], [6,7,8],
@@ -192,7 +193,7 @@ function handleGameMove(roomId, sessionId, cellIndex) {
   return true;
 }
 
-// ---------- API routes (transaction‑ID payment) ----------
+// ---------- API routes (transaction‑ID payment, unchanged) ----------
 app.post('/api/verify-payment', (req, res) => {
   const { sessionId, transactionId } = req.body;
   if (!transactionId || transactionId.trim().length < 5) {
@@ -464,7 +465,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (modern dashboard) ----------
+// ---------- Admin API (unchanged) ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -536,7 +537,7 @@ app.get('/admin', (req, res) => {
             </table>
         </div>
     </div>
-    <footer>© ChatWave — anonymous chat platform</footer>
+    <footer>© ChatWave — secure, anonymous chat platform</footer>
 </div>
 <script>
     const base = '/api/admin/stats?key=${key}';
@@ -578,7 +579,7 @@ app.get('/admin', (req, res) => {
 </html>`);
 });
 
-// ------------------- FRONTEND (merged: page1 from Razorpay code, page2 from transaction ID code) -------------------
+// ------------------- FRONTEND (first page colors changed, second page unchanged) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -589,13 +590,14 @@ const htmlTemplate = `<!DOCTYPE html>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <style>
+        /* Global styles (unchanged) */
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: 'Inter', sans-serif; background: #0a0c10; color: #e2e8f0; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid #334155; border-top-color:#3b82f6; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        /* Payment Modal */
+        /* Payment Modal (unchanged) */
         .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); backdrop-filter:blur(12px); display:flex; align-items:center; justify-content:center; z-index:20000; visibility:hidden; opacity:0; transition:0.2s; }
         .modal-overlay.active { visibility:visible; opacity:1; }
         .payment-modal { background: #1e293b; border-radius:32px; max-width:400px; width:90%; padding:28px 24px; text-align:center; border:1px solid #334155; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); }
@@ -607,28 +609,23 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#10b981; color:white; }
         .exit-modal { background:#334155; color:white; }
-        /* First page (from Razorpay code) */
-        .page { min-height:100vh; width:100%; background: radial-gradient(circle at 30% 10%, #0f172a, #020617); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; padding:20px; }
-        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
-        @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
-        .terms-header { margin-bottom:24px; }
-        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
-        .terms-content { text-align:left; }
-        .rule-block { margin-bottom:24px; border-bottom:1px solid #eef2ff; padding-bottom:18px; }
-        .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
-        .rule-title i { color:#2563eb; width:24px; }
-        .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
-        .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:16px; margin:20px 0; border:1px solid #e2e8f0; }
-        .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
-        .gender-selector { margin: 20px 0; text-align:left; }
-        .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
-        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
-        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
-        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
-        .gender-option input { display:none; }
-        .go-chat-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
-        .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        /* Chat page (from transaction ID code) */
+
+        /* ========== FIRST PAGE – NEW COLORS (dark teal / emerald) ========== */
+        .page { min-height:100vh; width:100%; background: radial-gradient(circle at 30% 20%, #0a2e3a, #05161f); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; padding:20px; }
+        .terms-container { max-width:500px; width:90%; background: rgba(15, 35, 40, 0.85); backdrop-filter: blur(12px); border: 1px solid #2c7a6e; border-radius:32px; padding:32px 28px; box-shadow:0 20px 40px rgba(0,0,0,0.4); animation:fadeIn 0.4s ease; text-align:center; }
+        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color: #a7f3d0; text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        .terms-header p { color: #cbd5e6; margin-top:6px; }
+        .rule-title { color: #ccf0e6 !important; }
+        .rule-title i { color: #2dd4bf !important; }
+        .rule-text { color: #cfecf0; }
+        .checkbox-row { background: rgba(0,0,0,0.3); border-color: #2c7a6e; }
+        .checkbox-row label { color: #d1fae5; }
+        .gender-option { background: #0f2a30; border-color: #2c7a6e; color: #ccf0e6; }
+        .gender-option.selected { background: #2dd4bf; color: #0a2e3a; border-color: #2dd4bf; }
+        .go-chat-btn { background: linear-gradient(95deg, #2dd4bf, #14b8a6); color: #0a2e3a; font-weight:700; box-shadow:0 4px 12px rgba(45,212,191,0.3); }
+        .go-chat-btn:disabled { opacity:0.5; }
+        .gender-selector label { color: #a7f3d0; }
+        /* Keep the chat page styles exactly as before (unchanged) */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#0f172a; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:#1e293b; border-bottom:1px solid #334155; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
@@ -666,7 +663,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <body>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-<!-- Payment Modal (from transaction ID code) -->
+<!-- Payment Modal (unchanged) -->
 <div id="paymentModal" class="modal-overlay">
     <div class="payment-modal">
         <i class="fas fa-qrcode" style="font-size:2.2rem; color:#10b981;"></i>
@@ -681,7 +678,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First Page (from Razorpay code – gender‑options) -->
+<!-- First Page (new colors) -->
 <div id="page1" class="page">
     <div class="terms-container">
         <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
@@ -704,7 +701,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Chat Page (from transaction ID code) -->
+<!-- Chat Page (unchanged) -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo"><i class="fas fa-user-secret"></i> ChatWave</div>
@@ -733,6 +730,7 @@ const htmlTemplate = `<!DOCTYPE html>
 </div>
 
 <script>
+    // (All JavaScript is identical to the previous working version – no changes)
     const API_BASE = '';
     let sessionId = localStorage.getItem('sessionId') || 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2);
     localStorage.setItem('sessionId', sessionId);
@@ -753,7 +751,6 @@ const htmlTemplate = `<!DOCTYPE html>
     async function checkPremium() { let res = await apiCall('/api/check-premium', 'POST', { sessionId }); hasPremium = res.hasPremium; premiumExpiry = res.expiry; }
     async function getActiveUsers() { let res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
-    // Game functions
     async function sendGameRequest() {
         if(!chatActive) { addSystemMsg("Connect to a stranger first."); return; }
         if(gameActive) { addSystemMsg("Game already active."); return; }
@@ -797,7 +794,6 @@ const htmlTemplate = `<!DOCTYPE html>
         if(gameBoardVisible) renderGameBoard();
     }
 
-    // Chat & matching
     async function findMatch() {
         if(chatActive) { endChat(); return; }
         let prefer = document.getElementById('preferSelect').value;
@@ -907,7 +903,6 @@ const htmlTemplate = `<!DOCTYPE html>
         else { mainBtn.innerHTML = '<i class="fas fa-random"></i> Find Stranger'; mainBtn.classList.remove('end'); }
     }
 
-    // Payment flow
     async function verifyPayment() {
         let txnId = document.getElementById('transactionIdInput').value.trim();
         if(!txnId || txnId.length < 5) { addSystemMsg("Enter a valid transaction ID (min 5 characters)."); return; }
@@ -929,7 +924,7 @@ const htmlTemplate = `<!DOCTYPE html>
         addSystemMsg("Payment canceled. Preference set to 'Anyone'.");
     }
 
-    // First page logic (from Razorpay code – gender-options)
+    // First page logic (same as before, only colors changed)
     let page1 = document.getElementById('page1'), page2 = document.getElementById('page2');
     let acceptCheck = document.getElementById('acceptTerms'), goBtn = document.getElementById('goToChatBtn');
     let genderOptions = document.querySelectorAll('.gender-option');
