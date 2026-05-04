@@ -3,7 +3,7 @@
 // Payment: fixed UPI QR + transaction ID (no gateway, reusable protection)
 // Fully functional play‑again with partner request/accept
 // Admin dashboard with modern chart styling
-// First page gender selection fixed (radio buttons, works reliably)
+// First page gender selection FIXED (radio buttons visible, event works)
 
 const express = require('express');
 const cors = require('cors');
@@ -196,7 +196,6 @@ function handleGameMove(roomId, sessionId, cellIndex) {
 }
 
 // ---------- API routes ----------
-// Payment with transaction ID
 app.post('/api/verify-payment', (req, res) => {
   const { sessionId, transactionId } = req.body;
   if (!transactionId || transactionId.trim().length < 5) {
@@ -312,7 +311,7 @@ app.post('/api/send-message', (req, res) => {
       } else if (data.type === 'game_accept') {
         const game = gameRooms.get(roomId);
         if (game && game.requestPending && game.requestFrom === chat.partnerSessionId) {
-          resetGame(roomId);          // reset board, set active true
+          resetGame(roomId);
           game.requestPending = false;
           game.requestFrom = null;
           const messages = chatMessages.get(roomId) || [];
@@ -352,7 +351,6 @@ app.post('/api/send-message', (req, res) => {
   res.json({ success: true });
 });
 
-// Typing and message polling (unchanged)
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -469,7 +467,7 @@ app.post('/api/end-chat', (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- Admin API (modern dashboard) ----------
+// ---------- Admin API (modern dashboard) - unchanged ----------
 function adminAuth(req, res, next) {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
@@ -583,7 +581,7 @@ app.get('/admin', (req, res) => {
 </html>`);
 });
 
-// ------------------- FRONTEND (modern anonymous UI) -------------------
+// ------------------- FRONTEND (modern anonymous UI, first page fixed) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -620,9 +618,10 @@ const htmlTemplate = `<!DOCTYPE html>
         .rule-item { display:flex; gap:12px; margin-bottom:16px; align-items:center; }
         .rule-icon { color:#3b82f6; font-size:1.2rem; }
         .gender-selector { margin: 20px 0; text-align:center; }
-        .gender-radio-group { display:flex; justify-content:center; gap:20px; margin-top:10px; }
-        .gender-radio-group label { display:flex; align-items:center; gap:6px; background:#0f172a; padding:8px 20px; border-radius:40px; cursor:pointer; border:1px solid #334155; transition:0.2s; }
-        .gender-radio-group input { display:none; }
+        .gender-radio-group { display:flex; justify-content:center; gap:20px; margin-top:10px; flex-wrap:wrap; }
+        .gender-radio-group label { display:flex; align-items:center; gap:8px; background:#0f172a; padding:8px 20px; border-radius:40px; cursor:pointer; border:1px solid #334155; transition:0.2s; }
+        /* Radio buttons are visible (no display:none) */
+        .gender-radio-group input { margin:0; accent-color:#3b82f6; width:16px; height:16px; cursor:pointer; }
         .gender-radio-group label:has(input:checked) { background:#3b82f6; border-color:#3b82f6; color:white; }
         .terms-check { margin:20px 0; display:flex; align-items:center; gap:12px; justify-content:center; }
         .enter-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:14px; border-radius:48px; font-size:1rem; font-weight:600; color:white; cursor:pointer; transition:0.2s; }
@@ -756,7 +755,7 @@ const htmlTemplate = `<!DOCTYPE html>
     async function checkPremium() { let res = await apiCall('/api/check-premium', 'POST', { sessionId }); hasPremium = res.hasPremium; premiumExpiry = res.expiry; }
     async function getActiveUsers() { let res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
-    // Game functions
+    // Game functions (unchanged)
     async function sendGameRequest() {
         if(!chatActive) { addSystemMsg("Connect to a stranger first."); return; }
         if(gameActive) { addSystemMsg("Game already active."); return; }
@@ -932,7 +931,7 @@ const htmlTemplate = `<!DOCTYPE html>
         addSystemMsg("Payment canceled. Preference set to 'Anyone'.");
     }
 
-    // First page logic (fixed with radio buttons)
+    // First page logic (FIXED)
     let page1 = document.getElementById('page1'), page2 = document.getElementById('page2');
     let acceptCheck = document.getElementById('acceptTerms'), goBtn = document.getElementById('goToChatBtn');
     let genderRadios = document.querySelectorAll('input[name="userGender"]');
@@ -953,8 +952,7 @@ const htmlTemplate = `<!DOCTYPE html>
         });
     });
     acceptCheck.addEventListener('change', updateButtonState);
-    // Initial state
-    updateButtonState();
+    updateButtonState(); // Initial state
 
     goBtn.addEventListener('click', async () => {
         if(!selectedGender) { genderError.innerText = 'Select your gender'; return; }
