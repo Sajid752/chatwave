@@ -1,7 +1,6 @@
 // ==================== server.js ====================
-// First page: gender buttons (reliable click)
-// Second page: full chat + Tic‑Tac‑Toe + payment modal (transaction ID)
-// Admin dashboard with modern design
+// Merged: first page from Razorpay code (gender‑options), second page from transaction‑ID code.
+// Payment: UPI QR + transaction ID (no gateway). Full chat + Tic‑Tac‑Toe + play‑again.
 
 const express = require('express');
 const cors = require('cors');
@@ -349,7 +348,6 @@ app.post('/api/send-message', (req, res) => {
   res.json({ success: true });
 });
 
-// Typing and message polling (unchanged)
 app.post('/api/typing', (req, res) => {
   const { sessionId, isTyping } = req.body;
   const chat = activeChats.get(sessionId);
@@ -580,7 +578,7 @@ app.get('/admin', (req, res) => {
 </html>`);
 });
 
-// ------------------- FRONTEND (first page with gender buttons, second page with full chat + transaction ID) -------------------
+// ------------------- FRONTEND (merged: page1 from Razorpay code, page2 from transaction ID code) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -597,6 +595,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid #334155; border-top-color:#3b82f6; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
+        /* Payment Modal */
         .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); backdrop-filter:blur(12px); display:flex; align-items:center; justify-content:center; z-index:20000; visibility:hidden; opacity:0; transition:0.2s; }
         .modal-overlay.active { visibility:visible; opacity:1; }
         .payment-modal { background: #1e293b; border-radius:32px; max-width:400px; width:90%; padding:28px 24px; text-align:center; border:1px solid #334155; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); }
@@ -608,18 +607,28 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#10b981; color:white; }
         .exit-modal { background:#334155; color:white; }
+        /* First page (from Razorpay code) */
         .page { min-height:100vh; width:100%; background: radial-gradient(circle at 30% 10%, #0f172a, #020617); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; padding:20px; }
-        .glass-card { max-width:560px; width:100%; background: rgba(30,41,59,0.6); backdrop-filter:blur(12px); border-radius:32px; padding:32px 28px; border:1px solid #334155; box-shadow:0 20px 35px -10px rgba(0,0,0,0.3); }
-        h1 { font-size:2rem; text-align:center; background:linear-gradient(135deg, #c084fc, #60a5fa); -webkit-background-clip:text; background-clip:text; color:transparent; margin-bottom:8px; }
-        .rules { margin:24px 0; }
-        .rule-item { display:flex; gap:12px; margin-bottom:16px; align-items:center; }
-        .rule-icon { color:#3b82f6; font-size:1.2rem; }
-        .gender-options { display:flex; gap:16px; justify-content:center; margin:20px 0; }
-        .gender-btn { background:#0f172a; border:1px solid #334155; padding:10px 20px; border-radius:40px; cursor:pointer; transition:0.2s; }
-        .gender-btn.selected { background:#3b82f6; border-color:#3b82f6; color:white; }
-        .terms-check { margin:20px 0; display:flex; align-items:center; gap:12px; justify-content:center; }
-        .enter-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:14px; border-radius:48px; font-size:1rem; font-weight:600; color:white; cursor:pointer; transition:0.2s; }
-        .enter-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        .terms-container { max-width:500px; width:90%; background:white; padding:32px 28px; border-radius:24px; box-shadow:0 20px 40px rgba(0,0,0,0.1); animation:fadeIn 0.4s ease; text-align:center; }
+        @keyframes fadeIn { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+        .terms-header { margin-bottom:24px; }
+        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color:#1e293b; }
+        .terms-content { text-align:left; }
+        .rule-block { margin-bottom:24px; border-bottom:1px solid #eef2ff; padding-bottom:18px; }
+        .rule-title { font-weight:700; font-size:1.1rem; color:#0f172a; margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+        .rule-title i { color:#2563eb; width:24px; }
+        .rule-text { color:#334155; font-size:0.85rem; line-height:1.5; padding-left:32px; }
+        .checkbox-row { display:flex; align-items:flex-start; gap:14px; background:#f8fafc; padding:18px 20px; border-radius:16px; margin:20px 0; border:1px solid #e2e8f0; }
+        .checkbox-row input { width:22px; height:22px; cursor:pointer; accent-color:#2563eb; margin-top:2px; }
+        .gender-selector { margin: 20px 0; text-align:left; }
+        .gender-selector label { font-weight:600; margin-right:16px; display:block; margin-bottom:8px; }
+        .gender-options { display:flex; gap:16px; margin-top:8px; flex-wrap:wrap; justify-content:center; }
+        .gender-option { display:flex; align-items:center; gap:8px; cursor:pointer; padding:8px 16px; background:#f1f5f9; border-radius:40px; border:1px solid #e2e8f0; }
+        .gender-option.selected { background:#2563eb; color:white; border-color:#2563eb; }
+        .gender-option input { display:none; }
+        .go-chat-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:16px; border-radius:40px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; margin-top:20px; }
+        .go-chat-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        /* Chat page (from transaction ID code) */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#0f172a; flex-direction:column; }
         .chat-page.active { display:flex; }
         .chat-header { background:#1e293b; border-bottom:1px solid #334155; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
@@ -657,7 +666,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <body>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-<!-- Payment Modal -->
+<!-- Payment Modal (from transaction ID code) -->
 <div id="paymentModal" class="modal-overlay">
     <div class="payment-modal">
         <i class="fas fa-qrcode" style="font-size:2.2rem; color:#10b981;"></i>
@@ -672,34 +681,30 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First Page (gender buttons) -->
+<!-- First Page (from Razorpay code – gender‑options) -->
 <div id="page1" class="page">
-    <div class="glass-card">
-        <h1><i class="fas fa-user-secret"></i> ChatWave</h1>
-        <p style="text-align:center; margin-bottom:20px;">Talk to strangers · Anonymous · Play games</p>
-        <div class="rules">
-            <div class="rule-item"><div class="rule-icon"><i class="fas fa-check-circle"></i></div> You must be 18+</div>
-            <div class="rule-item"><div class="rule-icon"><i class="fas fa-ban"></i></div> No nudity / hate speech</div>
-            <div class="rule-item"><div class="rule-icon"><i class="fas fa-question-circle"></i></div> Do not ask for gender / personal info</div>
-            <div class="rule-item"><div class="rule-icon"><i class="fas fa-smile"></i></div> Be kind & respectful</div>
-        </div>
-        <div class="gender-selector" style="text-align:center;">
-            <div style="margin-bottom:8px;">I am a:</div>
-            <div class="gender-options">
-                <div data-gender="male" class="gender-btn">Male</div>
-                <div data-gender="female" class="gender-btn">Female</div>
-                <div data-gender="other" class="gender-btn">Other</div>
+    <div class="terms-container">
+        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
+        <div class="terms-content">
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 10min of real female matches. Female/Other: always free.</div></div>
+            <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
+            <div class="gender-selector">
+                <label><i class="fas fa-user"></i> I am a:</label>
+                <div class="gender-options">
+                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
+                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
+                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
+                </div>
+                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
             </div>
-            <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:8px;"></div>
+            <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
+            <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
         </div>
-        <div class="terms-check">
-            <input type="checkbox" id="acceptTerms"> <label for="acceptTerms">I agree to the rules and am 18+</label>
-        </div>
-        <button id="goToChatBtn" class="enter-btn" disabled>Enter Anonymous Chat →</button>
     </div>
 </div>
 
-<!-- Chat Page (full functionality) -->
+<!-- Chat Page (from transaction ID code) -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo"><i class="fas fa-user-secret"></i> ChatWave</div>
@@ -748,6 +753,7 @@ const htmlTemplate = `<!DOCTYPE html>
     async function checkPremium() { let res = await apiCall('/api/check-premium', 'POST', { sessionId }); hasPremium = res.hasPremium; premiumExpiry = res.expiry; }
     async function getActiveUsers() { let res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
+    // Game functions
     async function sendGameRequest() {
         if(!chatActive) { addSystemMsg("Connect to a stranger first."); return; }
         if(gameActive) { addSystemMsg("Game already active."); return; }
@@ -791,6 +797,7 @@ const htmlTemplate = `<!DOCTYPE html>
         if(gameBoardVisible) renderGameBoard();
     }
 
+    // Chat & matching
     async function findMatch() {
         if(chatActive) { endChat(); return; }
         let prefer = document.getElementById('preferSelect').value;
@@ -900,7 +907,7 @@ const htmlTemplate = `<!DOCTYPE html>
         else { mainBtn.innerHTML = '<i class="fas fa-random"></i> Find Stranger'; mainBtn.classList.remove('end'); }
     }
 
-    // Payment flow (transaction ID)
+    // Payment flow
     async function verifyPayment() {
         let txnId = document.getElementById('transactionIdInput').value.trim();
         if(!txnId || txnId.length < 5) { addSystemMsg("Enter a valid transaction ID (min 5 characters)."); return; }
@@ -922,33 +929,44 @@ const htmlTemplate = `<!DOCTYPE html>
         addSystemMsg("Payment canceled. Preference set to 'Anyone'.");
     }
 
-    // First page logic (gender buttons)
+    // First page logic (from Razorpay code – gender-options)
     let page1 = document.getElementById('page1'), page2 = document.getElementById('page2');
     let acceptCheck = document.getElementById('acceptTerms'), goBtn = document.getElementById('goToChatBtn');
-    let genderBtns = document.querySelectorAll('.gender-btn'), genderError = document.getElementById('genderError');
+    let genderOptions = document.querySelectorAll('.gender-option');
+    let genderError = document.getElementById('genderError');
     let selectedGender = null;
-    genderBtns.forEach(btn => {
-        btn.addEventListener('click', function() {
-            genderBtns.forEach(b => b.classList.remove('selected'));
+
+    for(let i=0;i<genderOptions.length;i++) {
+        genderOptions[i].addEventListener('click', function() {
+            for(let j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
             this.classList.add('selected');
-            selectedGender = this.getAttribute('data-gender');
+            let radio = this.querySelector('input');
+            radio.checked = true;
+            selectedGender = radio.value;
             genderError.innerText = '';
             validateForm();
         });
-    });
-    function validateForm() { goBtn.disabled = !(selectedGender && acceptCheck.checked); }
+    }
+
+    function validateForm() {
+        let termsChecked = acceptCheck.checked;
+        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
+    }
     acceptCheck.addEventListener('change', validateForm);
-    goBtn.addEventListener('click', async () => {
-        if(!selectedGender) { genderError.innerText = 'Select your gender'; return; }
+    validateForm();
+
+    goBtn.addEventListener('click', function() {
+        if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
+        if(!acceptCheck.checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
         page2.classList.add('active');
-        await checkPremium();
+        checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Welcome, anonymous. Select preference and click 'Find Stranger'.\nMale users need ₹2 to chat with females.");
+        addSystemMsg("👋 Only real users! Male users selecting 'Female' will be asked to pay ₹2 for 10 minutes premium.");
     });
 
     document.getElementById('mainActionBtn').onclick = findMatch;
@@ -982,6 +1000,11 @@ app.get('/*splat', (req, res) => res.send(htmlTemplate));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ ChatWave server running on http://localhost:${PORT}`);
-  console.log(`🎮 Play again fully fixed – rematch request/accept works.`);
-  console.log(`💰 Manual UPI payment with transaction ID tracking.`);
+  if (ADMIN_SECRET) {
+    console.log(`📊 Admin dashboard enabled at /admin?key=${ADMIN_SECRET}`);
+  } else {
+    console.log(`⚠️ Admin dashboard disabled. Set ADMIN_SECRET environment variable to enable.`);
+  }
+  console.log(`💰 Payment: ₹2 for 10 min female chat (transaction ID required).`);
+  console.log(`🎮 Tic-Tac-Toe: "Play Again" sends a rematch request.`);
 });
