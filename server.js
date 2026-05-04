@@ -1,7 +1,7 @@
 // ==================== server.js ====================
 // Modern anonymous chat + Tic‑Tac‑Toe
-// Payment: fixed UPI QR + transaction ID
-// First page gender selection — 100% working
+// Payment: UPI QR + transaction ID
+// FIRST PAGE BUTTON FIXED (inline event handlers)
 
 const express = require('express');
 const cors = require('cors');
@@ -481,10 +481,10 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></td></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></tr></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (FIRST PAGE BUTTON FIXED) -------------------
+// ------------------- FRONTEND (FIRST PAGE WITH INLINE EVENT HANDLERS) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -522,7 +522,6 @@ const htmlTemplate = `<!DOCTYPE html>
         .gender-radio-group { display:flex; justify-content:center; gap:20px; margin-top:10px; flex-wrap:wrap; }
         .gender-radio-group label { display:flex; align-items:center; gap:8px; background:#0f172a; padding:8px 20px; border-radius:40px; cursor:pointer; border:1px solid #334155; transition:0.2s; }
         .gender-radio-group input { margin:0; accent-color:#3b82f6; }
-        .gender-radio-group label:has(input:checked) { background:#3b82f6; border-color:#3b82f6; color:white; }
         .terms-check { margin:20px 0; display:flex; align-items:center; gap:12px; justify-content:center; }
         .enter-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:14px; border-radius:48px; font-size:1rem; font-weight:600; color:white; cursor:pointer; transition:0.2s; }
         .enter-btn:disabled { opacity:0.5; cursor:not-allowed; }
@@ -578,7 +577,7 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First Page -->
+<!-- FIRST PAGE – with inline event handlers -->
 <div id="page1" class="page">
     <div class="glass-card">
         <h1><i class="fas fa-user-secret"></i> ChatWave</h1>
@@ -591,21 +590,21 @@ const htmlTemplate = `<!DOCTYPE html>
         </div>
         <div class="gender-selector">
             <div>I am a:</div>
-            <div class="gender-radio-group">
-                <label><input type="radio" name="userGender" value="male"> Male</label>
-                <label><input type="radio" name="userGender" value="female"> Female</label>
-                <label><input type="radio" name="userGender" value="other"> Other</label>
+            <div class="gender-radio-group" id="genderGroup">
+                <label><input type="radio" name="userGender" value="male" id="genderMale" onclick="genderSelected()"> Male</label>
+                <label><input type="radio" name="userGender" value="female" id="genderFemale" onclick="genderSelected()"> Female</label>
+                <label><input type="radio" name="userGender" value="other" id="genderOther" onclick="genderSelected()"> Other</label>
             </div>
             <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:8px;"></div>
         </div>
         <div class="terms-check">
-            <input type="checkbox" id="acceptTerms"> <label for="acceptTerms">I agree to the rules and am 18+</label>
+            <input type="checkbox" id="acceptTerms" onchange="enableEnterButton()"> <label for="acceptTerms">I agree to the rules and am 18+</label>
         </div>
-        <button id="goToChatBtn" class="enter-btn" disabled>Enter Anonymous Chat →</button>
+        <button id="goToChatBtn" class="enter-btn" disabled onclick="enterChat()">Enter Anonymous Chat →</button>
     </div>
 </div>
 
-<!-- Chat Page -->
+<!-- Chat Page (unchanged) -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
         <div class="logo"><i class="fas fa-user-secret"></i> ChatWave</div>
@@ -827,48 +826,42 @@ const htmlTemplate = `<!DOCTYPE html>
         addSystemMsg("Payment canceled. Preference set to 'Anyone'.");
     }
 
-    // ========== FIRST PAGE LOGIC (REWRITTEN – BULLETPROOF) ==========
-    const page1 = document.getElementById('page1');
-    const page2 = document.getElementById('page2');
-    const acceptCheck = document.getElementById('acceptTerms');
-    const goButton = document.getElementById('goToChatBtn');
-    const genderRadios = document.querySelectorAll('input[name="userGender"]');
-    const genderErrorDiv = document.getElementById('genderError');
+    // ========== FIRST PAGE BUTTON LOGIC (INLINE HANDLERS) ==========
     let selectedGender = null;
 
-    function enableButton() {
-        goButton.disabled = !(selectedGender && acceptCheck.checked);
+    function genderSelected() {
+        if(document.getElementById('genderMale').checked) selectedGender = 'male';
+        else if(document.getElementById('genderFemale').checked) selectedGender = 'female';
+        else if(document.getElementById('genderOther').checked) selectedGender = 'other';
+        document.getElementById('genderError').innerText = '';
+        enableEnterButton();
     }
 
-    genderRadios.forEach(radio => {
-        radio.addEventListener('change', function() {
-            if (this.checked) {
-                selectedGender = this.value;
-                genderErrorDiv.innerText = '';
-                enableButton();
-            }
-        });
-    });
+    function enableEnterButton() {
+        const termsChecked = document.getElementById('acceptTerms').checked;
+        const btn = document.getElementById('goToChatBtn');
+        btn.disabled = !(selectedGender && termsChecked);
+    }
 
-    acceptCheck.addEventListener('change', enableButton);
-    enableButton();
-
-    goButton.addEventListener('click', async () => {
-        if (!selectedGender) {
-            genderErrorDiv.innerText = 'Please select your gender';
+    function enterChat() {
+        if(!selectedGender) {
+            document.getElementById('genderError').innerText = 'Please select your gender';
             return;
         }
-        if (!acceptCheck.checked) return;
+        if(!document.getElementById('acceptTerms').checked) return;
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
-        page1.style.display = 'none';
-        page2.classList.add('active');
-        await checkPremium();
+        document.getElementById('page1').style.display = 'none';
+        document.getElementById('page2').classList.add('active');
+        checkPremium();
         getActiveUsers();
-        if (activePolling) clearInterval(activePolling);
+        if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
         addSystemMsg("👋 Welcome, anonymous. Select preference and click 'Find Stranger'.\nMale users need ₹2 to chat with females.");
-    });
+    }
+
+    // Set initial button state
+    enableEnterButton();
 
     document.getElementById('mainActionBtn').onclick = findMatch;
     document.getElementById('skipBtn').onclick = skipChat;
