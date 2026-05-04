@@ -1,6 +1,6 @@
 // ==================== server.js ====================
-// Merged: first page from Razorpay code (gender‑options) – COLORS UPDATED.
-// Second page from transaction‑ID code (full chat + Tic‑Tac‑Toe + payment).
+// Merged: scrollable first page (glassmorphic), redesigned chat navbar,
+// payment modal on demand (male + female preference), action button toggles Find/Skip.
 // Payment: UPI QR + transaction ID (no gateway).
 
 const express = require('express');
@@ -16,7 +16,7 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin123';
 app.use(cors());
 app.use(express.json());
 
-// ---------- Persistent storage (unchanged from working version) ----------
+// ---------- Persistent storage ----------
 const PAYMENTS_FILE = path.join(__dirname, 'payments.json');
 let payments = [];
 if (fs.existsSync(PAYMENTS_FILE)) {
@@ -42,13 +42,13 @@ function saveTransaction(txnId) {
   fs.writeFileSync(TXN_FILE, JSON.stringify([...usedTransactions], null, 2));
 }
 
-// ---------- In‑memory stores (real‑time chat & game) ----------
+// ---------- In‑memory stores (unchanged from working version) ----------
 const activeSessions = new Map();
-const userPremiums = new Map();        // sessionId -> expiry timestamp
+const userPremiums = new Map();
 const userGender = new Map();
 const waitingQueue = [];
-const activeChats = new Map();         // sessionId -> { partnerSessionId, roomId }
-const chatMessages = new Map();        // roomId -> array of messages
+const activeChats = new Map();
+const chatMessages = new Map();
 const chatEnded = new Map();
 const userPreferredGender = new Map();
 const typingStatus = new Map();
@@ -115,7 +115,7 @@ function tryMatchRealUsers() {
   return true;
 }
 
-// ---------- Game helpers (unchanged) ----------
+// ---------- Game helpers (same as before) ----------
 function checkWinner(board) {
   const winPatterns = [
     [0,1,2], [3,4,5], [6,7,8],
@@ -193,7 +193,7 @@ function handleGameMove(roomId, sessionId, cellIndex) {
   return true;
 }
 
-// ---------- API routes (transaction‑ID payment, unchanged) ----------
+// ---------- API routes (payment with transaction ID) ----------
 app.post('/api/verify-payment', (req, res) => {
   const { sessionId, transactionId } = req.body;
   if (!transactionId || transactionId.trim().length < 5) {
@@ -487,117 +487,27 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
 app.get('/admin', (req, res) => {
   const key = req.query.key;
   if (!ADMIN_SECRET || key !== ADMIN_SECRET) return res.status(401).send('Unauthorized');
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChatWave Admin</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { background: #0a0c10; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 24px; color: #e2e8f0; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        h1 { font-size: 2rem; font-weight: 600; margin-bottom: 8px; background: linear-gradient(135deg, #c084fc, #60a5fa); -webkit-background-clip: text; background-clip: text; color: transparent; }
-        .subtitle { color: #94a3b8; margin-bottom: 32px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 32px; }
-        .stat-card { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(8px); border-radius: 24px; padding: 24px; border: 1px solid #334155; }
-        .stat-title { font-size: 0.875rem; font-weight: 500; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-        .stat-value { font-size: 2.5rem; font-weight: 700; color: #f1f5f9; }
-        .chart-card { background: rgba(15, 23, 42, 0.8); border-radius: 24px; padding: 24px; margin-bottom: 32px; border: 1px solid #334155; }
-        .chart-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 20px; color: #cbd5e1; }
-        canvas { max-height: 300px; width: 100%; }
-        .table-container { background: rgba(15, 23, 42, 0.8); border-radius: 24px; overflow: auto; border: 1px solid #334155; }
-        table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 16px 20px; background: #1e293b; color: #cbd5e1; font-weight: 600; border-bottom: 1px solid #334155; }
-        td { padding: 12px 20px; color: #e2e8f0; border-bottom: 1px solid #1e293b; }
-        tr:hover { background: #1e293b; }
-        .badge { background: #3b82f6; border-radius: 40px; padding: 4px 12px; font-size: 0.75rem; font-weight: 500; }
-        .refresh-btn { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 40px; font-weight: 500; cursor: pointer; margin-bottom: 24px; transition: 0.2s; }
-        .refresh-btn:hover { background: #2563eb; }
-        footer { text-align: center; margin-top: 32px; color: #64748b; font-size: 0.75rem; }
-    </style>
-</head>
-<body>
-<div class="container">
-    <h1>ChatWave • Admin</h1>
-    <div class="subtitle">Real‑time analytics & payment logs</div>
-    <button class="refresh-btn" onclick="loadData()">⟳ Refresh</button>
-    <div class="stats-grid" id="statsGrid"></div>
-    <div class="chart-card">
-        <div class="chart-title">📊 Daily Revenue (last 7 days)</div>
-        <canvas id="dailyChart"></canvas>
-    </div>
-    <div class="chart-card">
-        <div class="chart-title">💳 Recent Payments</div>
-        <div class="table-container">
-            <table id="paymentsTable">
-                <thead><tr><th>Transaction ID</th><th>Amount</th><th>Date & Time</th><th>Session</th><th>Status</th></tr></thead>
-                <tbody></tbody>
-            </table>
-        </div>
-    </div>
-    <footer>© ChatWave — secure, anonymous chat platform</footer>
-</div>
-<script>
-    const base = '/api/admin/stats?key=${key}';
-    async function loadData() {
-        const res = await fetch(base);
-        const data = await res.json();
-        if (!data.success) return;
-        document.getElementById('statsGrid').innerHTML = \`
-            <div class="stat-card"><div class="stat-title">👥 Active Users</div><div class="stat-value">\${data.activeUsers}</div></div>
-            <div class="stat-card"><div class="stat-title">💬 Total Matches</div><div class="stat-value">\${data.totalMatches}</div></div>
-            <div class="stat-card"><div class="stat-title">💰 Revenue (₹)</div><div class="stat-value">₹\${data.totalRevenue}</div></div>
-            <div class="stat-card"><div class="stat-title">💳 Payments</div><div class="stat-value">\${data.totalPayments}</div></div>
-        \`;
-        const tbody = document.querySelector('#paymentsTable tbody');
-        tbody.innerHTML = data.recentPayments.map(p => \`
-            <tr>
-                <td><span class="badge">\${p.transactionId || p.id}</span></td>
-                <td>₹\${p.amount}</td>
-                <td>\${new Date(p.timestamp).toLocaleString()}</td>
-                <td>\${p.sessionId.substring(0,12)}...</td>
-                <td><span style="color:#10b981;">✓ Completed</span></td>
-            </tr>
-        \`).join('');
-        const ctx = document.getElementById('dailyChart').getContext('2d');
-        if (window.dailyChart) window.dailyChart.destroy();
-        window.dailyChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: data.last7Days.map(d => d.date),
-                datasets: [{ label: 'Revenue (₹)', data: data.last7Days.map(d => d.amount), backgroundColor: '#3b82f6', borderRadius: 8 }]
-            },
-            options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { position: 'top' } } }
-        });
-    }
-    loadData();
-    setInterval(loadData, 30000);
-</script>
-</body>
-</html>`);
+  res.send(`<!DOCTYPE html><html><head><title>ChatWave Admin</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:monospace;background:#f1f5f9;padding:20px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px}.card{background:white;border-radius:16px;padding:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}.card .value{font-size:2rem;font-weight:bold}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;text-align:left;border-bottom:1px solid #e2e8f0}</style></head><body><div class="container"><h1>📊 ChatWave Admin</h1><button onclick="loadData()">Refresh</button><div id="stats"></div><canvas id="dailyChart" style="max-height:300px"></canvas><h3>Recent Payments</h3><table id="paymentsTable"><thead><tr><th>Payment ID</th><th>Amount</th><th>Date</th><th>Session</th></td></thead><tbody></tbody></table></div><script>const base='/api/admin/stats?key=${key}';async function loadData(){const r=await fetch(base);const d=await r.json();if(!d.success)return;document.getElementById('stats').innerHTML=\`<div class="card"><h3>Active Users</h3><div class="value">\${d.activeUsers}</div></div><div class="card"><h3>Total Matches</h3><div class="value">\${d.totalMatches}</div></div><div class="card"><h3>Total Revenue (₹)</h3><div class="value">\${d.totalRevenue}</div></div><div class="card"><h3>Payments</h3><div class="value">\${d.totalPayments}</div></div>\`;document.querySelector('#paymentsTable tbody').innerHTML=d.recentPayments.map(p=>\`<tr><td>\${p.id}</td><td>₹\${p.amount}</td><td>\${new Date(p.timestamp).toLocaleString()}</td><td>\${p.sessionId.substring(0,12)}...</td></tr>\`).join('');new Chart(document.getElementById('dailyChart'),{type:'bar',data:{labels:d.last7Days.map(x=>x.date),datasets:[{label:'Payments (₹)',data:d.last7Days.map(x=>x.amount),backgroundColor:'#3b82f6'}]}})}loadData();setInterval(loadData,30000);</script></body></html>`);
 });
 
-// ------------------- FRONTEND (first page colors changed, second page unchanged) -------------------
+// ------------------- FRONTEND (scrollable first page, redesigned navbar, single action button) -------------------
 const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>ChatWave · Anonymous Chat</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <style>
-        /* Global styles (unchanged) */
         * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family: 'Inter', sans-serif; background: #0a0c10; color: #e2e8f0; }
+        body { font-family: 'Inter', sans-serif; background: #0a0c10; color: #e2e8f0; overflow-x:hidden; }
         .loading-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; z-index:10000; visibility:hidden; opacity:0; transition:0.2s; }
         .loading-overlay.active { visibility:visible; opacity:1; }
         .spinner { width:50px; height:50px; border:4px solid #334155; border-top-color:#3b82f6; border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
-        /* Payment Modal (unchanged) */
+        /* Payment Modal */
         .modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); backdrop-filter:blur(12px); display:flex; align-items:center; justify-content:center; z-index:20000; visibility:hidden; opacity:0; transition:0.2s; }
         .modal-overlay.active { visibility:visible; opacity:1; }
         .payment-modal { background: #1e293b; border-radius:32px; max-width:400px; width:90%; padding:28px 24px; text-align:center; border:1px solid #334155; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); }
@@ -609,32 +519,35 @@ const htmlTemplate = `<!DOCTYPE html>
         .modal-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; border:none; cursor:pointer; }
         .pay-now { background:#10b981; color:white; }
         .exit-modal { background:#334155; color:white; }
-
-        /* ========== FIRST PAGE – NEW COLORS (dark teal / emerald) ========== */
-        .page { min-height:100vh; width:100%; background: radial-gradient(circle at 30% 20%, #0a2e3a, #05161f); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; padding:20px; }
-        .terms-container { max-width:500px; width:90%; background: rgba(15, 35, 40, 0.85); backdrop-filter: blur(12px); border: 1px solid #2c7a6e; border-radius:32px; padding:32px 28px; box-shadow:0 20px 40px rgba(0,0,0,0.4); animation:fadeIn 0.4s ease; text-align:center; }
-        .terms-header h1 { font-size:2rem; display:flex; align-items:center; justify-content:center; gap:12px; color: #a7f3d0; text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-        .terms-header p { color: #cbd5e6; margin-top:6px; }
-        .rule-title { color: #ccf0e6 !important; }
-        .rule-title i { color: #2dd4bf !important; }
-        .rule-text { color: #cfecf0; }
-        .checkbox-row { background: rgba(0,0,0,0.3); border-color: #2c7a6e; }
-        .checkbox-row label { color: #d1fae5; }
-        .gender-option { background: #0f2a30; border-color: #2c7a6e; color: #ccf0e6; }
-        .gender-option.selected { background: #2dd4bf; color: #0a2e3a; border-color: #2dd4bf; }
-        .go-chat-btn { background: linear-gradient(95deg, #2dd4bf, #14b8a6); color: #0a2e3a; font-weight:700; box-shadow:0 4px 12px rgba(45,212,191,0.3); }
-        .go-chat-btn:disabled { opacity:0.5; }
-        .gender-selector label { color: #a7f3d0; }
-        /* Keep the chat page styles exactly as before (unchanged) */
+        /* FIRST PAGE – scrollable, glassmorphic */
+        .page { min-height:100vh; width:100%; background: radial-gradient(circle at 30% 10%, #0f172a, #020617); display:flex; align-items:center; justify-content:center; position:fixed; top:0; left:0; overflow-y:auto; padding:20px; }
+        .terms-container { max-width:560px; width:100%; background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(16px); border-radius:48px; padding:36px 32px; border:1px solid #334155; box-shadow:0 25px 45px -12px rgba(0,0,0,0.4); transition:0.3s; margin:auto; }
+        h1 { font-size:2.2rem; text-align:center; background:linear-gradient(135deg, #c084fc, #60a5fa); -webkit-background-clip:text; background-clip:text; color:transparent; margin-bottom:8px; font-weight:800; }
+        .rules { margin:28px 0; }
+        .rule-item { display:flex; gap:14px; margin-bottom:18px; align-items:center; background:rgba(0,0,0,0.2); padding:10px 16px; border-radius:60px; backdrop-filter:blur(4px); }
+        .rule-icon { color:#3b82f6; font-size:1.2rem; min-width:28px; }
+        .rule-text { font-size:0.9rem; line-height:1.4; color:#e2e8f0; }
+        .gender-selector { margin: 24px 0 20px; text-align:center; }
+        .gender-selector > div { font-weight:500; margin-bottom:12px; color:#94a3b8; }
+        .gender-options { display:flex; gap:16px; justify-content:center; flex-wrap:wrap; }
+        .gender-option { background:rgba(15, 23, 42, 0.7); border:1px solid #334155; padding:8px 24px; border-radius:40px; cursor:pointer; transition:0.2s; font-weight:500; backdrop-filter:blur(4px); }
+        .gender-option.selected { background:#3b82f6; border-color:#3b82f6; color:white; box-shadow:0 0 12px rgba(59,130,246,0.5); }
+        .terms-check { margin:20px 0; display:flex; align-items:center; gap:12px; justify-content:center; }
+        .enter-btn { width:100%; background:linear-gradient(95deg, #3b82f6, #2563eb); border:none; padding:16px; border-radius:60px; font-size:1.1rem; font-weight:700; color:white; cursor:pointer; transition:0.2s; margin-top:20px; box-shadow:0 6px 14px rgba(59,130,246,0.3); }
+        .enter-btn:disabled { opacity:0.5; cursor:not-allowed; }
+        /* CHAT PAGE */
         .chat-page { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#0f172a; flex-direction:column; }
         .chat-page.active { display:flex; }
+        /* Navbar: logo + badge left, dropdown + game button right */
         .chat-header { background:#1e293b; border-bottom:1px solid #334155; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; }
+        .nav-left { display:flex; align-items:center; gap:12px; }
         .logo { font-weight:800; font-size:1.3rem; background:linear-gradient(135deg, #c084fc, #60a5fa); -webkit-background-clip:text; background-clip:text; color:transparent; }
         .badge { background:#0f172a; padding:6px 12px; border-radius:40px; font-size:0.75rem; display:inline-flex; align-items:center; gap:6px; border:1px solid #334155; }
-        .pref-bar { background:#1e293b; padding:12px 20px; display:flex; gap:12px; flex-wrap:wrap; border-bottom:1px solid #334155; }
-        .pref-bar select, .pref-bar button { background:#0f172a; border:1px solid #334155; padding:6px 14px; border-radius:40px; color:white; cursor:pointer; }
-        .game-btn { background:#10b981; border:none; }
-        .chat-messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; background:#0f172a; }
+        .nav-right { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+        .pref-selector select { background:#0f172a; border:1px solid #334155; padding:6px 14px; border-radius:40px; color:white; cursor:pointer; font-size:0.8rem; }
+        .game-btn { background:#10b981; border:none; padding:6px 14px; border-radius:40px; color:white; font-weight:500; font-size:0.75rem; cursor:pointer; }
+        /* Chat area */
+        .chat-messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; background:#0f172a; scroll-behavior:smooth; }
         .msg { max-width:80%; padding:10px 16px; border-radius:20px; font-size:0.9rem; word-break:break-word; }
         .msg-in { background:#334155; align-self:flex-start; border-bottom-left-radius:4px; }
         .msg-out { background:#3b82f6; align-self:flex-end; border-bottom-right-radius:4px; }
@@ -645,25 +558,23 @@ const htmlTemplate = `<!DOCTYPE html>
         .game-cell.disabled { cursor:not-allowed; opacity:0.5; }
         .typing { font-size:0.75rem; padding:4px 20px; color:#94a3b8; font-style:italic; min-height:28px; }
         .input-area { display:flex; gap:10px; padding:16px; background:#1e293b; border-top:1px solid #334155; }
-        .input-area input { flex:1; padding:12px 16px; border-radius:40px; background:#0f172a; border:1px solid #334155; color:white; }
-        .send-btn { background:#3b82f6; border:none; padding:0 20px; border-radius:40px; color:white; font-weight:600; cursor:pointer; }
-        .action-buttons { display:flex; gap:10px; padding:0 16px 16px 16px; }
-        .action-buttons button { flex:1; padding:12px; border-radius:40px; font-weight:600; cursor:pointer; }
-        .main-action { background:#3b82f6; color:white; border:none; }
-        .skip-btn { background:#ef4444; color:white; border:none; }
-        .main-action.end { background:#ef4444; }
+        .input-area input { flex:1; padding:12px 16px; border-radius:40px; background:#0f172a; border:1px solid #334155; color:white; font-size:0.9rem; }
+        .send-btn { background:#3b82f6; border:none; width:auto; padding:0 20px; border-radius:40px; color:white; font-weight:600; cursor:pointer; }
+        .action-btn { background:#f59e0b; border:none; padding:0 20px; border-radius:40px; color:white; font-weight:600; cursor:pointer; min-width:110px; }
+        .action-btn.skip { background:#ef4444; }
         @media (max-width:700px) {
             .game-board { grid-template-columns:repeat(3, 60px); gap:6px; }
             .game-cell { width:60px; height:60px; font-size:1.5rem; }
             .msg { max-width:90%; }
-            .action-buttons { flex-direction:column; }
+            .chat-header { flex-direction:column; align-items:stretch; }
+            .nav-left, .nav-right { justify-content:space-between; }
         }
     </style>
 </head>
 <body>
 <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
 
-<!-- Payment Modal (unchanged) -->
+<!-- Payment Modal -->
 <div id="paymentModal" class="modal-overlay">
     <div class="payment-modal">
         <i class="fas fa-qrcode" style="font-size:2.2rem; color:#10b981;"></i>
@@ -678,59 +589,62 @@ const htmlTemplate = `<!DOCTYPE html>
     </div>
 </div>
 
-<!-- First Page (new colors) -->
+<!-- FIRST PAGE (scrollable, glassmorphic) -->
 <div id="page1" class="page">
     <div class="terms-container">
-        <div class="terms-header"><h1><i class="fas fa-waveform"></i> ChatWave</h1><p>Connect with real people · ₹2 for male→female (10 min)</p></div>
-        <div class="terms-content">
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-gavel"></i> 1. Guidelines</div><div class="rule-text">Be respectful. No harassment.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-venus-mars"></i> 2. Payment Policy</div><div class="rule-text">Male → Female: ₹2 unlocks 10min of real female matches. Female/Other: always free.</div></div>
-            <div class="rule-block"><div class="rule-title"><i class="fas fa-shield-alt"></i> 3. Privacy</div><div class="rule-text">No chat logs stored. Anonymous only.</div></div>
-            <div class="gender-selector">
-                <label><i class="fas fa-user"></i> I am a:</label>
-                <div class="gender-options">
-                    <label class="gender-option" data-gender="male"><input type="radio" name="userGender" value="male"> 👨 Male</label>
-                    <label class="gender-option" data-gender="female"><input type="radio" name="userGender" value="female"> 👩 Female</label>
-                    <label class="gender-option" data-gender="other"><input type="radio" name="userGender" value="other"> 🌈 Other</label>
-                </div>
-                <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:4px;"></div>
-            </div>
-            <div class="checkbox-row"><input type="checkbox" id="acceptTerms"><label>I agree to Terms & Conditions and confirm I am 18+ years old.</label></div>
-            <button id="goToChatBtn" class="go-chat-btn" disabled><i class="fas fa-arrow-right"></i> Enter ChatWave</button>
+        <h1><i class="fas fa-user-secret"></i> ChatWave</h1>
+        <p style="text-align:center; margin-bottom:20px; color:#94a3b8;">Talk to strangers · Anonymous · Play games</p>
+        <div class="rules">
+            <div class="rule-item"><div class="rule-icon"><i class="fas fa-check-circle"></i></div><div class="rule-text">You must be 18+</div></div>
+            <div class="rule-item"><div class="rule-icon"><i class="fas fa-ban"></i></div><div class="rule-text">No nudity / hate speech</div></div>
+            <div class="rule-item"><div class="rule-icon"><i class="fas fa-question-circle"></i></div><div class="rule-text">Do not ask for gender / personal info</div></div>
+            <div class="rule-item"><div class="rule-icon"><i class="fas fa-smile"></i></div><div class="rule-text">Be kind & respectful</div></div>
         </div>
+        <div class="gender-selector">
+            <div>I am a:</div>
+            <div class="gender-options">
+                <div data-gender="male" class="gender-option">Male</div>
+                <div data-gender="female" class="gender-option">Female</div>
+                <div data-gender="other" class="gender-option">Other</div>
+            </div>
+            <div id="genderError" style="color:#ef4444; font-size:0.7rem; margin-top:8px;"></div>
+        </div>
+        <div class="terms-check">
+            <input type="checkbox" id="acceptTerms"> <label for="acceptTerms">I agree to the rules and am 18+</label>
+        </div>
+        <button id="goToChatBtn" class="enter-btn" disabled>Enter Anonymous Chat →</button>
     </div>
 </div>
 
-<!-- Chat Page (unchanged) -->
+<!-- CHAT PAGE -->
 <div id="page2" class="chat-page">
     <div class="chat-header">
-        <div class="logo"><i class="fas fa-user-secret"></i> ChatWave</div>
-        <div class="badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
-    </div>
-    <div class="pref-bar">
-        <select id="preferSelect">
-            <option value="any">Anyone</option>
-            <option value="female">Female</option>
-            <option value="male">Male</option>
-            <option value="other">Other</option>
-        </select>
-        <button id="payNowBtn" class="game-btn" style="background:#f59e0b;"><i class="fas fa-rupee-sign"></i> Pay ₹2 (Female access)</button>
-        <button id="gameRequestBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
+        <div class="nav-left">
+            <div class="logo"><i class="fas fa-user-secret"></i> ChatWave</div>
+            <div class="badge"><i class="fas fa-users"></i> <span id="activeUserCount">--</span> online</div>
+        </div>
+        <div class="nav-right">
+            <div class="pref-selector">
+                <select id="preferSelect">
+                    <option value="any">✨ Anyone</option>
+                    <option value="female">👩 Female</option>
+                    <option value="male">👨 Male</option>
+                    <option value="other">🌈 Other</option>
+                </select>
+            </div>
+            <button id="gameRequestBtn" class="game-btn"><i class="fas fa-gamepad"></i> Play Tic-Tac-Toe</button>
+        </div>
     </div>
     <div class="chat-messages" id="chatMessages"></div>
     <div class="typing" id="typingIndicator"></div>
     <div class="input-area">
+        <button id="mainActionBtn" class="action-btn">Find Stranger</button>
         <input type="text" id="msgInput" placeholder="Type a message..." autocomplete="off" disabled>
         <button id="sendBtn" class="send-btn" disabled><i class="fas fa-paper-plane"></i> Send</button>
-    </div>
-    <div class="action-buttons">
-        <button id="mainActionBtn" class="main-action"><i class="fas fa-random"></i> Find Stranger</button>
-        <button id="skipBtn" class="skip-btn"><i class="fas fa-forward"></i> Skip</button>
     </div>
 </div>
 
 <script>
-    // (All JavaScript is identical to the previous working version – no changes)
     const API_BASE = '';
     let sessionId = localStorage.getItem('sessionId') || 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2);
     localStorage.setItem('sessionId', sessionId);
@@ -751,6 +665,7 @@ const htmlTemplate = `<!DOCTYPE html>
     async function checkPremium() { let res = await apiCall('/api/check-premium', 'POST', { sessionId }); hasPremium = res.hasPremium; premiumExpiry = res.expiry; }
     async function getActiveUsers() { let res = await apiCall('/api/active-users', 'GET'); document.getElementById('activeUserCount').innerText = res.count; }
 
+    // GAME FUNCTIONS (unchanged)
     async function sendGameRequest() {
         if(!chatActive) { addSystemMsg("Connect to a stranger first."); return; }
         if(gameActive) { addSystemMsg("Game already active."); return; }
@@ -794,8 +709,8 @@ const htmlTemplate = `<!DOCTYPE html>
         if(gameBoardVisible) renderGameBoard();
     }
 
-    async function findMatch() {
-        if(chatActive) { endChat(); return; }
+    // MAIN ACTION: Find / Skip
+    async function performFindMatch() {
         let prefer = document.getElementById('preferSelect').value;
         if(userGender === 'male' && prefer === 'female' && !hasPremium) {
             pendingFindMatch = true;
@@ -804,13 +719,18 @@ const htmlTemplate = `<!DOCTYPE html>
             document.getElementById('paymentModal').classList.add('active');
             return;
         }
-        if(chatActive) endChat();
+        if(chatActive) { 
+            // If already in a chat, the same button acts as "Skip"
+            skipChat();
+            return;
+        }
         showLoading(true);
         let res = await apiCall('/api/find-match', 'POST', { prefer, sessionId, userGender });
         showLoading(false);
         if(res.success && res.partner) startChat(res.partner);
         else addSystemMsg(res.message || "No stranger found.");
     }
+
     async function skipChat() {
         if(!chatActive) { addSystemMsg("No active chat."); return; }
         showLoading(true);
@@ -819,38 +739,43 @@ const htmlTemplate = `<!DOCTYPE html>
         msgInterval = null; typingInterval = null;
         chatActive = false; activePartner = null; gameActive = false; gameBoardVisible = false;
         clearChatMsgs(true);
-        updateUI();
+        updateMainButton();
         if(res.success && res.partner) startChat(res.partner);
         else if(res.message) addSystemMsg(res.message);
         showLoading(false);
     }
-    async function endChat() {
-        if(chatActive) {
-            await apiCall('/api/end-chat', 'POST', { sessionId });
-            if(msgInterval) clearInterval(msgInterval); if(typingInterval) clearInterval(typingInterval);
-            msgInterval = null; typingInterval = null;
-            chatActive = false; activePartner = null; gameActive = false; gameBoardVisible = false;
-            clearChatMsgs(true);
-            updateUI();
-        } else addSystemMsg("No active chat.");
-    }
+
+    // No separate endChat, skip does the same
+
     function startChat(partner) {
-        if(chatActive) endChat();
+        if(chatActive) skipChat(); // cleanup
         activePartner = partner; chatActive = true; gameActive = false; gameBoardVisible = false; mySymbol = null;
         clearChatMsgs();
         let genderDisplay = partner.actualGender === 'male' ? 'Male' : (partner.actualGender === 'female' ? 'Female' : 'Other');
         addSystemMsg('✨ Connected with ' + genderDisplay + ' stranger! Be anonymous, be kind.');
-        updateUI();
+        updateMainButton();
         lastMsgTimestamp = Date.now();
         if(msgInterval) clearInterval(msgInterval); msgInterval = setInterval(pollMessages, 1500);
         if(typingInterval) clearInterval(typingInterval); typingInterval = setInterval(pollTyping, 2000);
         document.getElementById('msgInput').disabled = false; document.getElementById('sendBtn').disabled = false;
-        let mainBtn = document.getElementById('mainActionBtn'); mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat'; mainBtn.classList.add('end');
+        document.getElementById('msgInput').focus();
     }
+
+    function updateMainButton() {
+        let btn = document.getElementById('mainActionBtn');
+        if(chatActive && activePartner) {
+            btn.innerHTML = '<i class="fas fa-forward"></i> Skip';
+            btn.classList.add('skip');
+        } else {
+            btn.innerHTML = '<i class="fas fa-random"></i> Find Stranger';
+            btn.classList.remove('skip');
+        }
+    }
+
     async function pollMessages() {
         if(!chatActive) return;
         let res = await apiCall('/api/get-messages', 'POST', { sessionId, lastTimestamp: lastMsgTimestamp });
-        if(res.chatEnded) { addSystemMsg("Stranger left."); endChat(); return; }
+        if(res.chatEnded) { addSystemMsg("Stranger left."); if(chatActive) skipChat(); return; }
         if(res.success && res.messages && res.messages.length) {
             for(let msg of res.messages) {
                 if(msg.from === 'system') {
@@ -885,6 +810,7 @@ const htmlTemplate = `<!DOCTYPE html>
             }
         }
     }
+
     async function pollTyping() { if(!chatActive) return; let res = await apiCall('/api/get-typing', 'POST', { sessionId }); document.getElementById('typingIndicator').innerHTML = res.isTyping ? '<i class="fas fa-pencil-alt"></i> Stranger is typing...' : ''; }
     async function sendTyping(typing) { if(!chatActive) return; await apiCall('/api/typing', 'POST', { sessionId, isTyping: typing }); }
     async function sendMessage() {
@@ -894,15 +820,12 @@ const htmlTemplate = `<!DOCTYPE html>
         if(typingTimeout) clearTimeout(typingTimeout); await sendTyping(false);
         await apiCall('/api/send-message', 'POST', { sessionId, text });
     }
+
     function addSystemMsg(t) { let area = document.getElementById('chatMessages'); let div = document.createElement('div'); div.className = 'sys-msg'; div.innerHTML = '<i class="fas fa-info-circle"></i> ' + t; area.appendChild(div); scrollToBottom(); }
     function addBubble(t, type) { let area = document.getElementById('chatMessages'); let div = document.createElement('div'); div.className = 'msg ' + (type==='out'?'msg-out':'msg-in'); div.innerText = t; area.appendChild(div); scrollToBottom(); }
     function clearChatMsgs(keepSys) { document.getElementById('chatMessages').innerHTML = ''; if(keepSys) addSystemMsg("Chat ended. Click 'Find Stranger' to start fresh."); }
-    function updateUI() {
-        let mainBtn = document.getElementById('mainActionBtn');
-        if(chatActive && activePartner) { mainBtn.innerHTML = '<i class="fas fa-stop"></i> End Chat'; mainBtn.classList.add('end'); }
-        else { mainBtn.innerHTML = '<i class="fas fa-random"></i> Find Stranger'; mainBtn.classList.remove('end'); }
-    }
 
+    // Payment flow
     async function verifyPayment() {
         let txnId = document.getElementById('transactionIdInput').value.trim();
         if(!txnId || txnId.length < 5) { addSystemMsg("Enter a valid transaction ID (min 5 characters)."); return; }
@@ -914,68 +837,49 @@ const htmlTemplate = `<!DOCTYPE html>
             await checkPremium();
             document.getElementById('paymentModal').classList.remove('active');
             document.getElementById('transactionIdInput').value = '';
-            if(pendingFindMatch) { pendingFindMatch = false; findMatch(); }
+            if(pendingFindMatch) { pendingFindMatch = false; performFindMatch(); }
         } else addSystemMsg(res.message);
     }
     function exitPaymentModal() {
         document.getElementById('paymentModal').classList.remove('active');
         pendingFindMatch = false;
-        document.getElementById('preferSelect').value = 'any';
-        addSystemMsg("Payment canceled. Preference set to 'Anyone'.");
+        addSystemMsg("Payment canceled.");
     }
 
-    // First page logic (same as before, only colors changed)
+    // First page gender selection and transition
     let page1 = document.getElementById('page1'), page2 = document.getElementById('page2');
     let acceptCheck = document.getElementById('acceptTerms'), goBtn = document.getElementById('goToChatBtn');
-    let genderOptions = document.querySelectorAll('.gender-option');
+    let genderBtns = document.querySelectorAll('.gender-option');
     let genderError = document.getElementById('genderError');
     let selectedGender = null;
-
-    for(let i=0;i<genderOptions.length;i++) {
-        genderOptions[i].addEventListener('click', function() {
-            for(let j=0;j<genderOptions.length;j++) genderOptions[j].classList.remove('selected');
+    genderBtns.forEach(btn => {
+        btn.addEventListener('click', function() {
+            genderBtns.forEach(b => b.classList.remove('selected'));
             this.classList.add('selected');
-            let radio = this.querySelector('input');
-            radio.checked = true;
-            selectedGender = radio.value;
+            selectedGender = this.getAttribute('data-gender');
             genderError.innerText = '';
             validateForm();
         });
-    }
-
-    function validateForm() {
-        let termsChecked = acceptCheck.checked;
-        if(selectedGender && termsChecked) { goBtn.disabled = false; } else { goBtn.disabled = true; }
-    }
+    });
+    function validateForm() { goBtn.disabled = !(selectedGender && acceptCheck.checked); }
     acceptCheck.addEventListener('change', validateForm);
-    validateForm();
-
-    goBtn.addEventListener('click', function() {
-        if(!selectedGender) { genderError.innerText = 'Please select your gender'; return; }
-        if(!acceptCheck.checked) return;
+    goBtn.addEventListener('click', async () => {
+        if(!selectedGender) { genderError.innerText = 'Select your gender'; return; }
         userGender = selectedGender;
         localStorage.setItem('userGender', userGender);
         page1.style.display = 'none';
         page2.classList.add('active');
-        checkPremium();
+        await checkPremium();
         getActiveUsers();
         if(activePolling) clearInterval(activePolling);
         activePolling = setInterval(getActiveUsers, 10000);
-        addSystemMsg("👋 Only real users! Male users selecting 'Female' will be asked to pay ₹2 for 10 minutes premium.");
+        addSystemMsg("👋 Welcome, anonymous. Select preference and click 'Find Stranger'.\nMale users need ₹2 to chat with females.");
     });
 
-    document.getElementById('mainActionBtn').onclick = findMatch;
-    document.getElementById('skipBtn').onclick = skipChat;
+    document.getElementById('mainActionBtn').onclick = performFindMatch;
     document.getElementById('sendBtn').onclick = sendMessage;
     document.getElementById('msgInput').onkeypress = e => { if(e.key === 'Enter') sendMessage(); };
     document.getElementById('gameRequestBtn').onclick = sendGameRequest;
-    document.getElementById('payNowBtn').onclick = () => {
-        if(userGender !== 'male') { addSystemMsg("Only male users need payment."); return; }
-        if(hasPremium) { addSystemMsg("Premium already active."); return; }
-        let qrDiv = document.getElementById('qrCodeContainer'); qrDiv.innerHTML = "";
-        new QRCode(qrDiv, { text: "upi://pay?pa=chatwave@okhdfcbank&pn=ChatWave&am=2&cu=INR", width: 180, height: 180 });
-        document.getElementById('paymentModal').classList.add('active');
-    };
     document.getElementById('modalPayNow').onclick = verifyPayment;
     document.getElementById('modalExit').onclick = exitPaymentModal;
     let msgInput = document.getElementById('msgInput');
